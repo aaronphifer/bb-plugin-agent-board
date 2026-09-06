@@ -1,0 +1,19 @@
+dist/
+node_modules/
+coverage/
+.cache/
+.vite/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Local diagnostics and runtime evidence
+*.sqlite*
+*.db
+*.db-*
+*.tsbuildinfo
+evidence/
+playwright-report/
+test-results/

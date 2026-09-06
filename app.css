@@ -1,0 +1,300 @@
+/*
+ * bb-plugin-agent-board — shared live-execution animation vocabulary.
+ *
+ * Operations-dashboard feel: slow, restrained, state-driven. Every moving
+ * effect is disabled under `prefers-reduced-motion: reduce` AND when the
+ * focus root carries [data-motion="reduced"] (belt and suspenders: the CSS
+ * media query alone would cover system settings, the attribute also covers
+ * harness-driven toggles and any future in-app control). Status clarity
+ * never depends on animation: glyphs, chips, and text carry the state.
+ */
+
+/* BB deliberately does not provide a global preflight to plugin panels. Keep
+   the dashboard's width contract local: padding and borders must be included
+   in every descendant's declared/max width, including third-party primitives
+   such as buttons and dialogs rendered inside cards. */
+.ab-global-dashboard,
+.ab-global-dashboard::before,
+.ab-global-dashboard::after,
+.ab-global-dashboard *,
+.ab-global-dashboard *::before,
+.ab-global-dashboard *::after {
+  box-sizing: border-box;
+}
+
+/* --- 1. Active pulse: the live dot and the active pipeline node breathe
+        slowly (opacity/shadow nuance only — no card ever expands). ------- */
+@keyframes ab-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes ab-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
+    opacity: 0.85;
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 12%, transparent);
+    opacity: 1;
+  }
+}
+
+.ab-live-dot {
+  animation: ab-breathe 1.8s ease-in-out infinite;
+}
+
+.ab-node-active-glyph {
+  animation: ab-node-pulse 1.8s ease-in-out infinite;
+}
+
+/* --- 2. Active connector / signal: a one-shot sweep travels the connector
+        when the active phase advances, then settles (500ms). ------------ */
+@keyframes ab-signal {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.ab-connector {
+  position: relative;
+  overflow: hidden;
+}
+
+.ab-connector-signal::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 34%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary) 85%, transparent),
+    transparent
+  );
+  animation: ab-signal 500ms ease-in-out forwards;
+}
+
+/* --- 3. Indeterminate live-operation strip: a short highlight travels a
+        thin track. Never a percentage; static (no travel) under reduced
+        motion. ---------------------------------------------------------- */
+@keyframes ab-strip-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(440%);
+  }
+}
+
+.ab-strip {
+  position: relative;
+  height: 3px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.ab-strip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 22%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--primary) 80%, transparent);
+  animation: ab-strip-slide 1.5s ease-in-out infinite;
+}
+
+/* Stable per-card offsets prevent several active Kanban strips from moving
+   in lockstep. Negative delays avoid an empty initial track. */
+.ab-strip[data-motion-variant="1"]::after {
+  animation-delay: -375ms;
+}
+
+.ab-strip[data-motion-variant="2"]::after {
+  animation-delay: -750ms;
+}
+
+.ab-strip[data-motion-variant="3"]::after {
+  animation-delay: -1125ms;
+}
+
+.ab-strip-static::after {
+  animation: none;
+  width: 34%;
+  transform: translateX(100%);
+  opacity: 0.45;
+}
+
+/* --- 4. Current-activity change: the old line fades upward while the new
+        line enters from below (250ms, absolute overlay keeps layout). --- */
+@keyframes ab-activity-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ab-activity-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+.ab-activity-in {
+  animation: ab-activity-in 250ms ease-out both;
+}
+
+.ab-activity-out {
+  animation: ab-activity-out 250ms ease-in both;
+}
+
+/* --- 5. Recent-activity insertion: new rows fade/slide in briefly; older
+        rows shift with the flow (250ms, keyed by entry id). ------------- */
+@keyframes ab-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ab-row-in {
+  animation: ab-row-in 250ms ease-out both;
+}
+
+/* --- 6. Completion: a one-shot checkmark pop, then fully static. ------ */
+@keyframes ab-pop {
+  0% {
+    transform: scale(0.55);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.18);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.ab-pop {
+  animation: ab-pop 250ms ease-out both;
+}
+
+/* --- 7. Failure: a one-time subtle flash, then persistent error styling. */
+@keyframes ab-fail-in {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--destructive) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--destructive) 0%, transparent);
+  }
+}
+
+.ab-fail-in {
+  animation: ab-fail-in 300ms ease-out both;
+}
+
+/* --- Phase activation settle: the newly active node draws focus once
+        (450ms), then only the slow pulse remains. ---------------------- */
+@keyframes ab-settle {
+  0% {
+    opacity: 0.25;
+    transform: scale(0.82);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ab-settle {
+  animation: ab-settle 450ms ease-out both;
+}
+
+/* --- Reduced motion: no travel, no sweeps, no slides, no pulsing. Status
+        stays perfectly readable through glyphs, chips, and text. ------ */
+@media (prefers-reduced-motion: reduce) {
+  .ab-live-dot,
+  .ab-node-active-glyph,
+  .ab-connector-signal::after,
+  .ab-strip::after,
+  .ab-activity-in,
+  .ab-activity-out,
+  .ab-row-in,
+  .ab-pop,
+  .ab-fail-in,
+  .ab-settle {
+    animation: none !important;
+  }
+
+  .ab-strip::after {
+    width: 34%;
+    transform: translateX(100%);
+    opacity: 0.45;
+  }
+
+  .ab-connector-signal::after {
+    display: none;
+  }
+}
+
+[data-motion="reduced"] .ab-live-dot,
+[data-motion="reduced"] .ab-node-active-glyph,
+[data-motion="reduced"] .ab-connector-signal::after,
+[data-motion="reduced"] .ab-strip::after,
+[data-motion="reduced"] .ab-activity-in,
+[data-motion="reduced"] .ab-activity-out,
+[data-motion="reduced"] .ab-row-in,
+[data-motion="reduced"] .ab-pop,
+[data-motion="reduced"] .ab-fail-in,
+[data-motion="reduced"] .ab-settle {
+  animation: none !important;
+}
+
+[data-motion="reduced"] .ab-strip::after {
+  width: 34%;
+  transform: translateX(100%);
+  opacity: 0.45;
+}
+
+[data-motion="reduced"] .ab-connector-signal::after {
+  display: none;
+}
