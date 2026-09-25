@@ -8,6 +8,14 @@ just completed.
 
 Screenshots show the real plugin UI with clearly labeled synthetic data.
 
+## Install
+
+- **BB Marketplace:** [Agent Board on getbb.app](https://getbb.app/marketplace/agent-board)
+- **GitHub:** source, releases, and issues live in this repo
+
+If Agent Board is useful, a GitHub star helps other BB users find the
+project outside the marketplace.
+
 ## Why Agent Board
 
 Task management records what should happen. Orchestration starts and coordinates
@@ -35,7 +43,7 @@ focus and the global dashboard offer other views of the same bounded state.
 See [capture requirements and status](docs/screenshots.md) for remaining assets
 and the distinction between fixture media and live runtime evidence.
 
-## Installation
+## Install from Git
 
 First public beta: **0.6.1**. Install the released Git tag with BB:
 
@@ -87,7 +95,7 @@ without making Fleet a requirement. Raw prompts/answers never become public upda
 
 ## Redteam Integration
 
-**Optional.** Redteam must expose public `observability_snapshot` schema version 1.
+**Optional (private / optional).** Visitors cannot install or access a private Redteam repository from this README. Redteam must expose public `observability_snapshot` schema version 1.
 Agent Board uses a local schema, imports no Redteam modules, and shows real phases,
 models, tools and bounded operation metadata when supplied. Source failure is
 isolated from native BB observation; source capabilities vary.
@@ -145,6 +153,9 @@ bb plugin build
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and
 [release evidence](RELEASE_AUDIT.md).
+
+Companion plugin: [Ollama Fleet](https://github.com/aaronphifer/bb-plugin-ollama-fleet) ·
+Author page: [getbb.app/marketplace/author/aaronphifer](https://getbb.app/marketplace/author/aaronphifer)
 
 ## License
 
