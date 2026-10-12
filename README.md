@@ -69,7 +69,7 @@ bb plugin install .
 Neither Fleet nor Redteam is required. Declared compatibility is BB >=0.40 and
 SDK >=0.4.21; the development SDK is pinned to 0.4.34. See the honest
 [compatibility matrix](RELEASE_AUDIT.md), including historical runtime evidence.
-For the unreleased 0.7.0 candidate, see [compatibility and upgrade notes](docs/upgrade-0.7.0.md).
+For the prepared, unpublished 0.7.0 source, see [compatibility and upgrade notes](docs/upgrade-0.7.0.md).
 
 ## Usage
 
@@ -150,10 +150,12 @@ This is a bounded latest view, not a persistent history database.
 
 ## Development
 
-The unreleased Phase 1 preview is documented in [vnext launch/testing](docs/vnext-testing.md),
+The prepared, unpublished 0.7.0 source is documented in [vnext launch/testing](docs/vnext-testing.md),
 [design](docs/vnext-design.md) and [release convention](docs/release-convention.md).
 Use a separate BB data directory and ports for development; keep your stable
-installation untouched. `0.7.0-rc.1` is not a published release.
+installation untouched. `0.7.0` on this PR branch is not a published release.
+See [dependency assessment](docs/dependency-security-0.7.0.md) and the PR
+Release validation checks before approving a merge.
 
 ```sh
 npm ci

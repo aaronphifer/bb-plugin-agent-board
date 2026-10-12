@@ -2,7 +2,7 @@
 
 Base: main, 92efdcdf89b838713dac7ebc9fc2eaef9e4b8860, plugin 0.6.1.
 Development branch: feature/agent-board-vnext. This is an unpublished
-release candidate. Stable installation and publication require separate approval.
+release preparation. Stable installation and publication require separate approval.
 
 Reuse the public SDK collectors, normalized cards, bounded caches, lifecycle
 watcher, optional Fleet/Redteam adapters and React hooks. Codex/Grok observation

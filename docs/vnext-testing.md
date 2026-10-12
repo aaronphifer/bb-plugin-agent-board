@@ -1,7 +1,7 @@
 # Development launch and verification
 
-Use Node.js 24 and an isolated BB host. The candidate is `0.7.0-rc.1`;
-it is unpublished. See [candidate validation](validation-0.7.0.md) for
+Use Node.js 24 and an isolated BB host. Version `0.7.0` is prepared on the PR
+branch and is unpublished. See [candidate validation](validation-0.7.0.md) for
 cross-platform results and their limits. Never install a review build over the
 stable plugin, share its data directory, or copy its credentials into a test host.
 

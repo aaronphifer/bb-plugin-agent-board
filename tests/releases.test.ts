@@ -7,12 +7,17 @@ function storage(initial: unknown = undefined) {
   return { kv, values };
 }
 describe("local versioned announcements", () => {
-  it("shows the current notes when upgrading from 0.6.1 or skipping releases", async () => {
-    const { kv } = storage(["0.6.1", "0.6.2"]);
+  it("shows stable notes after 0.6.1 or an RC while preserving prior dismissals", async () => {
+    const previous = ["0.6.1", "0.6.2", "0.7.0-rc.1"];
+    const { kv, values } = storage(previous);
+    expect(CURRENT_RELEASE.version).toBe("0.7.0");
     const store = new ReleaseAnnouncementStore(kv);
     expect(await store.snapshot()).toMatchObject({ version: CURRENT_RELEASE.version, dismissed: false });
     await store.dismiss(CURRENT_RELEASE.version);
     expect((await new ReleaseAnnouncementStore(kv).snapshot()).dismissed).toBe(true);
+    expect(values.get("release-dismissals")).toEqual([...previous, "0.7.0"]);
+    const rc = new ReleaseAnnouncementStore(kv, { ...CURRENT_RELEASE, version: "0.7.0-rc.1" });
+    expect((await rc.snapshot()).dismissed).toBe(true);
   });
   it.each([null, 42, "invalid", { dismissed: true }])("ignores non-array dismissal storage: %j", async value => {
     const { kv } = storage(value);

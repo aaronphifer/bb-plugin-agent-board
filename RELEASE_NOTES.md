@@ -1,7 +1,8 @@
-# Agent Board v0.7.0 — draft release notes
+# Agent Board v0.7.0 — prepared release notes
 
-Candidate: **0.7.0-rc.1**, unpublished and awaiting review. These notes are a
-draft for the eventual 0.7.0 release.
+Version **0.7.0** is prepared on the development PR branch, unpublished and
+awaiting final merge review. No public tag, release, marketplace update or
+installed stable-plugin update has occurred.
 
 Agent Board gives you a clearer view of live agent work and completed outcomes.
 
@@ -20,6 +21,10 @@ Agent Board gives you a clearer view of live agent work and completed outcomes.
 Reliability fixes preserve explicit result/check metadata before output truncation,
 qualify cached health during disconnects and failed/overdue refreshes, and avoid
 inventing elapsed duration for terminal tasks without completion timing.
+
+Release hardening adds hosted Node 24 Linux/Windows tests and typecheck, an
+Ubuntu official BB build/package gate, and fixed development Hono/Undici/source-map-js
+patches. See [dependency assessment](docs/dependency-security-0.7.0.md).
 
 Existing settings and attention dismissals are preserved. No manual data migration
 or configuration change is required. BB >=0.40 and public SDK >=0.4.21 remain

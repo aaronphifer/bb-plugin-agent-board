@@ -1,7 +1,8 @@
 # Release notes convention
 
-This work is unreleased. `0.7.0-rc.1` identifies the development release candidate;
-it is not a stable tag, release, marketplace or production update.
+This work is unreleased. `0.7.0` is prepared on the development PR branch after
+the RC hardening/CI gates passed. It is not a public tag, release, marketplace or
+production update. The changelog preparation date is not a publication date.
 
 For each approved release:
 

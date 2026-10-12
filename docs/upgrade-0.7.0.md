@@ -1,7 +1,8 @@
 # Agent Board 0.7.0 compatibility and upgrade notes
 
-The current source is **0.7.0-rc.1**, an unpublished candidate. Do not install
-it over a stable installation as part of release review.
+The current PR source is **0.7.0**, prepared but unpublished. Do not install it
+over a stable installation as part of release review. The public 0.6.1 tag remains
+the existing released installation until a separately approved publication.
 
 ## Compatibility
 
@@ -11,7 +12,9 @@ version checked during this review on 12 October 2026. The development/test SDK
 remains pinned to **0.4.34**. The BB 0.40.0 builder stamps SDK 0.4.21; the
 BB 0.46.0 builder stamps SDK 0.6.37. These are different roles: the development
 pin supplies types/test harnesses, while BB builds and supplies runtime shims.
-No dependency upgrade or compatibility-range narrowing was made.
+The SDK and production dependencies are unchanged; development Hono, Undici and
+source-map-js received compatible patch fixes. No BB/SDK compatibility range was
+narrowed. See [dependency assessment](dependency-security-0.7.0.md).
 
 Phase 1 adds one BB SDK read, `projects.get`, using `name` and `gitRemoteUrl`.
 Both fields and that method exist in SDK 0.4.21. Project lookup is optional,

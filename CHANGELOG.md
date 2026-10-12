@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.7.0 (candidate 0.7.0-rc.1)
+## 0.7.0 — prepared 2026-10-12 (unpublished)
 
 - Show the latest observed public activity and distinguish recent from quiet
   reporting, without changing task status or the indeterminate activity strips.
@@ -21,9 +21,13 @@
 - Make public-SDK test paths portable to Windows and use a serial Vitest thread
   pool for reliable startup on the development laptop.
 
+- Add Node 24 Ubuntu/Windows PR tests/typecheck and an Ubuntu official build/package gate.
+- Patch Hono, Undici and source-map-js development dependencies; the updated graph audits clean.
+- Prebundle the large icon data dependency in Vitest without relaxing hook limits or mocking the UI.
+
 No storage migration or settings reset is required. BB >=0.40 and SDK >=0.4.21
 remain declared; BB 0.46.0 is recommended. See [upgrade notes](docs/upgrade-0.7.0.md)
-and [release convention](docs/release-convention.md). This candidate is not published.
+and [release convention](docs/release-convention.md). Version 0.7.0 is prepared on the PR branch and is not published.
 
 ## 0.6.1 — first public beta
 
