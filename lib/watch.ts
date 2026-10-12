@@ -182,6 +182,12 @@ export class BoardWatcher {
   /** Terminal signal contributed to the current dirty set. */
   private dirtyTerminal = false;
   private disposed = false;
+  private unavailable = false;
+  private degraded = false;
+  private startedAt = 0;
+  private lastEventAt: number | null = null;
+  private lastPublishedAt: number | null = null;
+  private lastErrorAt: number | null = null;
   private readonly watchedTtlMs: number;
   private readonly debounceMs: number;
   private readonly lookupGapMs: number;
@@ -193,9 +199,22 @@ export class BoardWatcher {
     this.lookupGapMs = deps.lookupGapMs ?? 2_000;
     this.reconcileDelayMs = deps.reconcileDelayMs ?? 1_500;
     this.clock = deps.now ?? (() => Date.now());
+    this.startedAt = this.clock();
   }
 
   private readonly clock: () => number;
+
+  health() {
+    return { status: this.disposed ? "disposed" as const : this.unavailable ? "unavailable" as const : this.degraded ? "degraded" as const : "watching" as const,
+      startedAt: this.startedAt, lastEventAt: this.lastEventAt, lastPublishedAt: this.lastPublishedAt, lastErrorAt: this.lastErrorAt };
+  }
+  recordError(): void { if (!this.disposed) { this.lastErrorAt = this.clock(); this.degraded = true; } }
+  markUnavailable(): void { this.unavailable = true; this.recordError(); }
+  private publish(payload: { roots: string[]; global?: boolean }): boolean {
+    if (this.disposed) return false;
+    try { this.deps.publish(payload); this.lastPublishedAt = this.clock(); this.degraded = false; return true; }
+    catch { this.recordError(); return false; }
+  }
 
   /** Called by the RPC handler whenever a board is fetched for a root. */
   touch(rootThreadId: string, threads: string[], projectId: string | null): void {
@@ -264,6 +283,7 @@ export class BoardWatcher {
   async handleChanged(event: ThreadChangedEvent): Promise<void> {
     if (this.disposed) return;
     if (!isRelevantThreadChange(event)) return;
+    this.lastEventAt = this.clock();
     if (isTerminalThreadChange(event)) this.dirtyTerminal = true;
     this.markGlobalDirty();
     if (event.id === undefined) {
@@ -296,6 +316,7 @@ export class BoardWatcher {
     kind: LifecycleKind = "other",
   ): Promise<void> {
     if (this.disposed) return;
+    this.lastEventAt = this.clock();
     if (isTerminalLifecycleKind(kind)) this.dirtyTerminal = true;
     this.markGlobalDirty();
     for (const root of this.candidatesFor(thread.id, thread.projectId ?? null)) {
@@ -376,7 +397,7 @@ export class BoardWatcher {
     this.dirty.clear();
     this.dirtyGlobal = false;
     const payload = { roots, ...(global ? { global: true } : {}) };
-    this.deps.publish(payload);
+    this.publish(payload);
     // Bounded terminal-state self-correction: ONE delayed re-publish of the
     // same payload, so open boards re-read BB after any pre-terminal
     // in-flight fetch settled. Terminal threads emit no further signals, so
@@ -391,7 +412,7 @@ export class BoardWatcher {
     this.reconcileTimer = setTimeout(() => {
       this.reconcileTimer = null;
       if (this.disposed) return;
-      this.deps.publish(payload);
+      this.publish(payload);
     }, this.reconcileDelayMs);
     if (
       typeof this.reconcileTimer === "object" &&
@@ -425,42 +446,43 @@ export class BoardWatcher {
 
 /** Wire the watcher to the plugin API; returns the unsubscribe handle. */
 export function attachWatcher(bb: BbPluginApi, watcher: BoardWatcher): () => void {
-  const unsubscribe = bb.sdk.subscribe({
+  let unsubscribe = () => {};
+  try { unsubscribe = bb.sdk.subscribe({
     event: "thread:changed",
     callback: (event) => {
-      void watcher.handleChanged(event);
+      void watcher.handleChanged(event).catch(() => watcher.recordError());
     },
-  });
+  }); } catch { watcher.markUnavailable(); }
   // bb.events.on listeners live for the plugin's lifetime (no dispose handle).
   bb.events.on("thread.created", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "created");
+    void watcher.handleLifecycle(payload.thread, "created").catch(() => watcher.recordError());
   });
   bb.events.on("thread.active", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "active");
+    void watcher.handleLifecycle(payload.thread, "active").catch(() => watcher.recordError());
   });
   bb.events.on("thread.idle", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "idle");
+    void watcher.handleLifecycle(payload.thread, "idle").catch(() => watcher.recordError());
   });
   bb.events.on("thread.failed", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "failed");
+    void watcher.handleLifecycle(payload.thread, "failed").catch(() => watcher.recordError());
   });
   bb.events.on("thread.archived", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "archived");
+    void watcher.handleLifecycle(payload.thread, "archived").catch(() => watcher.recordError());
   });
   bb.events.on("thread.deleted", (payload) => {
-    void watcher.handleLifecycle(payload.thread, "deleted");
+    void watcher.handleLifecycle(payload.thread, "deleted").catch(() => watcher.recordError());
   });
   // Newer event names may not exist on older runtimes (which throw at
   // registration). Subscribe opportunistically: the thread:changed channel
   // already covers queue and failure transitions.
   onOptionalLifecycleEvent(bb, "turn.failed", (payload: { threadId: string }) => {
-    void watcher.handleLifecycle({ id: payload.threadId }, "turn-failed");
+    void watcher.handleLifecycle({ id: payload.threadId }, "turn-failed").catch(() => watcher.recordError());
   });
   onOptionalLifecycleEvent(bb, "message.queued", (payload: { entry: { threadId: string } }) => {
-    void watcher.handleLifecycle({ id: payload.entry.threadId }, "other");
+    void watcher.handleLifecycle({ id: payload.entry.threadId }, "other").catch(() => watcher.recordError());
   });
   onOptionalLifecycleEvent(bb, "message.dispatched", (payload: { entry: { threadId: string } }) => {
-    void watcher.handleLifecycle({ id: payload.entry.threadId }, "other");
+    void watcher.handleLifecycle({ id: payload.entry.threadId }, "other").catch(() => watcher.recordError());
   });
   return unsubscribe;
 }

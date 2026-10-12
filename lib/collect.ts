@@ -10,7 +10,7 @@
 // say so instead of lying by omission.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoardCard, ExecutionTimeline, ExecutionTimelineInput, GlobalDashboardSnapshot } from "../contract/rpc";
-import { BOARD_LIMITS, columnForStatus, countCards, previewText } from "./board-model";
+import { BOARD_LIMITS, columnForStatus, countCards, previewText, redactOperationalText } from "./board-model";
 import {
   activityFromEvents,
   normalizeThread,
@@ -36,6 +36,19 @@ import {
 } from "./global-model";
 import { FleetSource, scopedFleetCards, addFleetGroups, fleetTimelineEvents, fleetActive } from "./fleet-source";
 import { normalizeBbTimeline } from "./timeline-model";
+
+/** Remote label only, stripped of credentials/query/fragment; never a link. */
+export function safeRepositoryLabel(remote: string | null | undefined): string | null {
+  if (!remote) return null;
+  try {
+    const url = new URL(remote);
+    if (!["https:", "http:", "ssh:", "git:"].includes(url.protocol)) return null;
+    return previewText(redactOperationalText(`${url.host}${url.pathname.replace(/\.git$/, "")}`), 240);
+  } catch {
+    const scp = /^(?:[^@\s]+@)?([\w.-]+):([\w./-]+?)(?:\.git)?$/.exec(remote);
+    return scp ? previewText(redactOperationalText(`${scp[1]}/${scp[2]}`), 240) : null;
+  }
+}
 
 /** Output of board_snapshot (shape matches contract/rpc.ts). */
 export interface BoardSnapshot {
@@ -64,6 +77,8 @@ interface CacheEntry<V> {
   at: number;
   value: V;
 }
+type ProjectMetadata = { name: string | null; repository: string | null };
+export const PROJECT_METADATA_TIMEOUT_MS = 750;
 
 export class BoardCollector {
   private readonly sdk: Sdk;
@@ -74,6 +89,8 @@ export class BoardCollector {
   private readonly outputCache = new Map<string, CacheEntry<string | null>>();
   private readonly modelCache = new Map<string, CacheEntry<string | null>>();
   private providersCache: CacheEntry<Map<string, string>> | null = null;
+  private readonly projectCache = new Map<string, CacheEntry<ProjectMetadata>>();
+  private readonly projectRequests = new Map<string, Promise<ProjectMetadata>>();
   private readonly inflight = new Map<string, { promise: Promise<BoardSnapshot>; generation: number }>();
   private readonly snapshotCache = new Map<string, CacheEntry<BoardSnapshot>>();
   private globalSnapshotCache: CacheEntry<GlobalDashboardSnapshot> | null = null;
@@ -427,6 +444,33 @@ export class BoardCollector {
     return snapshot;
   }
 
+  private async projectMetadata(projectId: string): Promise<ProjectMetadata | null> {
+    const hit = this.projectCache.get(projectId);
+    if (hit && this.now() - hit.at < 30_000) return hit.value;
+    let request = this.projectRequests.get(projectId);
+    if (!request) {
+      // Retain physical requests after timeout; a later refresh cannot overlap
+      // an unresponsive metadata RPC. Bound that registry independently.
+      if (this.projectRequests.size >= 64) return null;
+      request = Promise.resolve().then(() => this.sdk.projects.get({ projectId })).then(project => {
+        const value = { name: previewText(redactOperationalText(project.name), 120), repository: safeRepositoryLabel(project.gitRemoteUrl) };
+        this.projectCache.delete(projectId);
+        this.projectCache.set(projectId, { at: this.now(), value });
+        if (this.projectCache.size > 64) this.projectCache.delete(this.projectCache.keys().next().value!);
+        return value;
+      });
+      this.projectRequests.set(projectId, request);
+      const current = request;
+      const settled = () => { if (this.projectRequests.get(projectId) === current) this.projectRequests.delete(projectId); };
+      void request.then(settled, settled);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([request, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), PROJECT_METADATA_TIMEOUT_MS); })]);
+    } catch { return null; }
+    finally { if (timer) clearTimeout(timer); }
+  }
+
   private async collectGlobal(
     fresh: boolean,
     dismissedKeys?: ReadonlySet<string>,
@@ -460,12 +504,25 @@ export class BoardCollector {
     const fleetSnapshot = fleetResult.status === "fulfilled" ? await this.fleet.collect() : null;
     const combined = fleetSnapshot ? addFleetGroups(groups, fleetSnapshot) : groups;
     if (fleetSnapshot) partial ||= fleetSnapshot.truncated;
-    return buildGlobalDashboard(combined, {
+    const dashboard = buildGlobalDashboard(combined, {
       now: this.now(),
       partial,
       unavailableSources: unavailable,
       dismissedKeys,
     });
+    // Public metadata enrichment is bounded to visible projects, concurrency 4.
+    const metadata = new Map<string, ProjectMetadata>();
+    const projectIds = [...new Set([...dashboard.active, ...dashboard.recent].map(e => e.projectId).filter((id): id is string => id !== null))];
+    await mapWithConcurrency(projectIds, 4, async projectId => {
+      const project = await this.projectMetadata(projectId);
+      if (project) metadata.set(projectId, project);
+    });
+    for (const execution of [...dashboard.active, ...dashboard.recent]) {
+      const project = execution.projectId ? metadata.get(execution.projectId) : undefined;
+      execution.projectName = project?.name ?? null;
+      execution.repository = project?.repository ?? null;
+    }
+    return dashboard;
   }
 
   private async collectGlobalBb(): Promise<GlobalSourceResult> {

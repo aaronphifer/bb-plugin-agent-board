@@ -44,6 +44,25 @@ beforeEach(() => {
   vi.useFakeTimers();
 });
 
+describe("watcher health", () => {
+  it("does not mark quiet sources as disconnected", () => {
+    const { watcher } = makeWatcher({ now: () => 900_000 });
+    expect(watcher.health()).toMatchObject({ status: "watching", lastEventAt: null, lastPublishedAt: null }); watcher.dispose();
+  });
+  it("records publication errors and recovers after a successful signal", async () => {
+    let fail = true; let now = 10;
+    const watcher = new BoardWatcher({ publish: () => { if (fail) throw new Error("private source detail"); }, getParent: async () => null, now: () => now });
+    watcher.touchGlobal(); await watcher.handleChanged(changed("thread")); expect(() => watcher.flush()).not.toThrow();
+    expect(watcher.health()).toMatchObject({ status: "degraded", lastErrorAt: 10 });
+    fail = false; now = 20; await watcher.handleChanged(changed("thread")); watcher.flush();
+    expect(watcher.health()).toMatchObject({ status: "watching", lastEventAt: 20, lastPublishedAt: 20 }); expect(JSON.stringify(watcher.health())).not.toContain("private"); watcher.dispose();
+  });
+  it("disposal stops publication and marks the watcher stopped", async () => {
+    const { watcher, recorded } = makeWatcher(); watcher.dispose(); await watcher.handleChanged(changed("x")); watcher.flush();
+    expect(watcher.health().status).toBe("disposed"); expect(recorded.publishes).toEqual([]);
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });

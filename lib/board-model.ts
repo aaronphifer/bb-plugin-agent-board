@@ -203,7 +203,8 @@ export function formatElapsed(ms: number): string {
 
 /**
  * Live elapsed for a card between authoritative snapshots: use durationMs
- * when the work finished, otherwise clock from startedAt against `now`.
+ * when the work finished, otherwise clock live work from startedAt against `now`.
+ * Terminal work without an authoritative end time has unknown duration.
  */
 export function cardElapsedMs(card: BoardCard, now: number): number | null {
   if (card.durationMs !== null && card.durationMs !== undefined) return card.durationMs;
@@ -211,5 +212,6 @@ export function cardElapsedMs(card: BoardCard, now: number): number | null {
   if (card.completedAt !== null && card.completedAt !== undefined) {
     return Math.max(0, card.completedAt - card.startedAt);
   }
+  if (["completed", "failed", "interrupted", "skipped"].includes(card.status)) return null;
   return Math.max(0, now - card.startedAt);
 }

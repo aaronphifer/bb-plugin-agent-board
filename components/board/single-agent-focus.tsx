@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { StatusChip } from "@/components/board/status-chip";
 import { PipelineTrack } from "@/components/board/pipeline-track";
 import { BoardCardView } from "@/components/board/board-card-view";
+import { ActivityFreshness } from "./activity-freshness";
 import { usePrefersReducedMotion } from "@/components/ui/hooks/use-media-query";
 import { ExecutionTimelineDialog, timelineTargetForCard } from "@/components/timeline/execution-timeline-dialog";
 
@@ -241,6 +242,7 @@ export function SingleAgentFocus({
           ) : null}
 
           {/* Truthful stats; unavailable fields are simply omitted. */}
+          <ActivityFreshness card={hero} now={now} />
           {stats.length > 0 ? (
             <dl className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5" data-testid="hero-stats">
               {stats.map((stat) => (

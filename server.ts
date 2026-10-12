@@ -3,8 +3,8 @@
 // The default export is a factory that receives the plugin API. The board is
 // derived observability: on each board_snapshot request it fans out to
 // bb.sdk (bounded), normalizes what BB reports into BoardCards, and returns
-// a snapshot. BB is the only source of truth; the plugin keeps no durable
-// state and only small ephemeral caches.
+// a snapshot. Sources remain authoritative; only attention/release dismissal
+// preferences are durable. Collection and watcher state are ephemeral caches.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { rpcContract } from "./contract/rpc";
 import { BoardCollector } from "./lib/collect";
@@ -12,6 +12,7 @@ import { attachWatcher, BoardWatcher } from "./lib/watch";
 import { FleetActivePoller } from "./lib/fleet-poll";
 import { RedteamActivePoller } from "./lib/redteam-poll";
 import { DismissalStore, attentionDismissalKey } from "./lib/dismissals";
+import { ReleaseAnnouncementStore } from "./lib/releases";
 
 export { BOARD_CHANGED_CHANNEL } from "./contract/rpc";
 
@@ -22,6 +23,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Presentation-only attention dismissals (one bounded kv row in bb.db,
   // surviving plugin reloads; never mutates any underlying source state).
   const dismissals = new DismissalStore(bb.storage.kv);
+  const releases = new ReleaseAnnouncementStore(bb.storage.kv);
   const watcher = new BoardWatcher({
     publish: (payload) => {
       collector.invalidate();
@@ -61,6 +63,8 @@ export default async function plugin(bb: BbPluginApi) {
   // BB threads/workflows/plans/delegations plus optional adapter cards share
   // one source-discriminated normalized contract.
   bb.rpc.register(rpcContract, {
+    release_announcement: () => releases.snapshot(),
+    dismiss_release_announcement: ({ version }) => releases.dismiss(version),
     board_snapshot: async ({ threadId, fresh }) => {
       const snapshot = await collector.snapshot(threadId, { fresh });
       // Feed the watcher the observed tree so change signals can be
@@ -90,7 +94,7 @@ export default async function plugin(bb: BbPluginApi) {
       watcher.touchGlobal();
       redteamPoller.observeGlobal(collector.isGlobalRedteamActive());
       fleetPoller.observe(collector.isFleetActive());
-      return snapshot;
+      return { ...snapshot, monitoring: watcher.health() };
     },
     dismiss_attention: async ({ executionKey, type, updatedAt }) => {
       const dismissed = await dismissals.dismiss(

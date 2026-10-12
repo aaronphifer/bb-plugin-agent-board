@@ -123,8 +123,13 @@ export const boardCardSchema = z.object({
   /** Task preview where the source exposes one (workflow promptPreview). */
   promptPreview: z.string().nullable(),
   activity: boardActivitySchema.nullable(),
+  /** Most recent public activity; never the snapshot fetch time. */
+  lastActivityAt: z.number().nullable().optional(),
   /** Compact final-output preview (truncated server-side). */
   outputPreview: z.string().nullable(),
+  /** Explicit agent-reported labels, retained before output preview truncation. */
+  completionResult: z.string().max(240).nullable().optional(),
+  reportedVerification: z.array(z.string().max(240)).max(4).optional(),
   /**
    * Latest user-visible assistant-authored text (bounded excerpt). Strictly
    * conversational: never reasoning, tool/command output, or user/system
@@ -219,6 +224,8 @@ export const globalExecutionSchema = z.object({
   card: boardCardSchema,
   projectId: z.string().nullable(),
   delegatedWorkers: z.array(boardCardSchema).max(4).optional(),
+  projectName: z.string().nullable().optional(),
+  repository: z.string().nullable().optional(),
   delegatedWorkerCount: z.number().int().nonnegative().optional(),
   activeDelegatedWorkerCount: z.number().int().nonnegative().optional(),
   childCount: z.number().int().nonnegative(),
@@ -353,6 +360,13 @@ export const globalDashboardCountsSchema = z.object({
 export type GlobalDashboardCounts = z.infer<typeof globalDashboardCountsSchema>;
 
 const globalDashboardSnapshotSchema = z.object({
+  monitoring: z.object({
+    status: z.enum(["watching", "degraded", "unavailable", "disposed"]),
+    startedAt: z.number(),
+    lastEventAt: z.number().nullable(),
+    lastPublishedAt: z.number().nullable(),
+    lastErrorAt: z.number().nullable(),
+  }).optional(),
   active: z.array(globalExecutionSchema),
   attention: z.array(attentionItemSchema),
   recent: z.array(globalExecutionSchema),
@@ -382,6 +396,14 @@ export const boardChangedPayloadSchema = z.object({
 });
 
 export const rpcContract = {
+  release_announcement: {
+    input: z.object({}),
+    output: z.object({ version: z.string(), title: z.string(), highlights: z.array(z.string()), dismissed: z.boolean() }),
+  },
+  dismiss_release_announcement: {
+    input: z.object({ version: z.string().min(1).max(80) }),
+    output: z.object({ dismissed: z.boolean() }),
+  },
   /**
    * Normalized board for one root thread and its publicly visible
    * descendants/workflows. `fresh: true` bypasses the short-lived
