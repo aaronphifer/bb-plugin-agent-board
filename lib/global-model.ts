@@ -96,6 +96,7 @@ export function buildGlobalExecution(group: GlobalExecutionGroup): GlobalExecuti
     (startedAt !== null && completedAt !== null ? Math.max(0, completedAt - startedAt) : null);
   const sourceLabel = group.source === "bb" ? "BB" : group.source === "ollama-fleet" ? "Ollama Fleet" : "Redteam";
   const latestPublicUpdate = pickLatestPublicUpdate(group.cards);
+  const activityTimes = [...group.cards, ...workers].map(c => c.lastActivityAt ?? c.activity?.at).filter((at): at is number => typeof at === "number" && Number.isFinite(at));
 
   const card: BoardCard = {
     key: `global:${group.key}`,
@@ -120,7 +121,10 @@ export function buildGlobalExecution(group: GlobalExecutionGroup): GlobalExecuti
     // A global aggregation never broadens prompt visibility.
     promptPreview: null,
     activity: primary?.activity ?? null,
+    lastActivityAt: activityTimes.length ? Math.max(...activityTimes) : null,
     outputPreview: primary?.outputPreview ?? null,
+    completionResult: primary?.completionResult ?? null,
+    ...(primary?.reportedVerification !== undefined ? { reportedVerification: primary.reportedVerification } : {}),
     latestPublicUpdate,
     errorPreview: primary?.errorPreview ?? null,
     tokens: primary?.tokens ?? null,

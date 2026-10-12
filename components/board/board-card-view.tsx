@@ -8,6 +8,8 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { StatusChip } from "@/components/board/status-chip";
 import { LiveIndicator, LiveStrip } from "@/components/board/live-execution-cue";
+import { ActivityFreshness } from "./activity-freshness";
+import { CompletionSummary } from "./completion-summary";
 import { ExecutionTimelineDialog, timelineTargetForCard } from "@/components/timeline/execution-timeline-dialog";
 
 /** Kind → icon hint (core Icon names). */
@@ -141,14 +143,14 @@ export function BoardCardView({
       ) : null}
 
       {/* Failure text — failures stay visible, not hidden. */}
-      {card.errorPreview !== null ? (
+      {card.errorPreview !== null && card.column !== "output" ? (
         <p className="mt-1.5 rounded bg-destructive/10 px-2 py-1 text-xs text-destructive line-clamp-3">
           {card.errorPreview}
         </p>
       ) : null}
 
       {/* Output preview for finished work. */}
-      {card.outputPreview !== null ? (
+      {card.outputPreview !== null && card.column !== "output" ? (
         <p className="mt-1.5 text-xs text-muted-foreground line-clamp-2">
           {card.outputPreview}
         </p>
@@ -167,6 +169,8 @@ export function BoardCardView({
       ) : null}
 
       {/* Footer: elapsed, tokens/tool calls, actions. */}
+      {executing ? <ActivityFreshness card={card} now={now} /> : null}
+      {card.column === "output" && card.kind !== "plan-step" ? <CompletionSummary card={card} /> : null}
       <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
         {elapsedMs !== null ? <span className="font-mono">{formatElapsed(elapsedMs)}</span> : null}
         {card.tokens !== null ? <span>{card.tokens.toLocaleString()} tok</span> : null}

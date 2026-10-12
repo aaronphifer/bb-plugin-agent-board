@@ -7,8 +7,9 @@ import { experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const packageRoot = new URL("..", import.meta.url).pathname;
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * Public packages beyond the SDK this plugin may import:
@@ -28,6 +29,7 @@ const ALLOW = [
   /^class-variance-authority$/u,
   /^@hugeicons\/(?:react|core-free-icons)$/u,
   /^vitest\/config$/u,
+  /^@testing-library\/react$/u, // Declared development-only DOM interaction helpers.
 ] as const;
 
 describe("public SDK only", () => {
@@ -42,7 +44,7 @@ describe("public SDK only", () => {
     expect(scan.files.length).toBeGreaterThan(0);
     expect(scan.files.some((file) => file.endsWith("server.ts"))).toBe(true);
     expect(scan.files.some((file) => file.endsWith("app.tsx"))).toBe(true);
-    expect(scan.files.some((file) => file.endsWith("lib/bb-source.ts"))).toBe(true);
+    expect(scan.files.some((file) => file.replaceAll("\\", "/").endsWith("lib/bb-source.ts"))).toBe(true);
   });
 
   it("still catches private packages and escaping paths", () => {

@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { BOARD_LIMITS } from "@/lib/board-model";
-import { BoardCollector, groupGlobalThreadRows } from "@/lib/collect";
+import { BoardCollector, groupGlobalThreadRows, PROJECT_METADATA_TIMEOUT_MS } from "@/lib/collect";
+afterEach(() => vi.useRealTimers());
 
 function row(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -34,9 +35,11 @@ function makeCollector(options: {
   redteam?: unknown;
   callRpcError?: Error;
   now?: () => number;
+  project?: () => Promise<{ name: string; gitRemoteUrl: string | null }>;
 } = {}) {
   const rows = options.rows ?? [row("thr_root", { status: "active", title: "Root work" })];
   const sdk = {
+    projects: { get: vi.fn(options.project ?? (async () => { throw new Error("Project metadata unavailable"); })) },
     threads: {
       list: vi.fn(async () => {
         if (options.listError) throw options.listError;
@@ -59,6 +62,20 @@ function makeCollector(options: {
 }
 
 describe("global BB collection", () => {
+  it("enriches project metadata once per project and strips remote credentials", async () => {
+    const { collector, sdk } = makeCollector({ rows: [row("a", { status: "active" }), row("b", { status: "active" })], project: async () => ({ name: "Project", gitRemoteUrl: "https://user:secret@github.com/example/repo.git?token=private" }) });
+    const result = await collector.globalDashboard();
+    expect(result.active.map(e => e.repository)).toEqual(["github.com/example/repo", "github.com/example/repo"]);
+    expect(result.active[0]?.projectName).toBe("Project"); expect(sdk.projects.get).toHaveBeenCalledTimes(1);
+  });
+  it("keeps native sessions when project metadata fails or hangs, without overlapping requests", async () => {
+    vi.useFakeTimers();
+    const { collector, sdk } = makeCollector({ project: () => new Promise(() => {}) });
+    const first = collector.globalDashboard(); await vi.advanceTimersByTimeAsync(PROJECT_METADATA_TIMEOUT_MS + 10);
+    expect((await first).active[0]).toMatchObject({ projectId: "proj", projectName: null, repository: null });
+    const second = collector.globalDashboard({ fresh: true }); await vi.advanceTimersByTimeAsync(PROJECT_METADATA_TIMEOUT_MS + 10); await second;
+    expect(sdk.projects.get).toHaveBeenCalledTimes(1);
+  });
   it("uses one bounded thread list and enriches one representative per logical execution", async () => {
     const rows = [
       row("thr_root", { title: "Parent operation", status: "idle", updatedAt: 800 }),

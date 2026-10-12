@@ -4,6 +4,7 @@ import {
   activityFromEvents,
   latestActivity,
   latestPublicUpdate,
+  latestPublicActivityAt,
   normalizeThread,
   recentActivityFeed,
   threadBoardStatus,
@@ -129,6 +130,13 @@ function queuedMessage(fields: Record<string, unknown>): QueuedMessageRow {
 }
 
 describe("thread card normalization", () => {
+  it("retains explicit bounded completion labels beyond the preview", () => {
+    const output = "Review details. ".repeat(100) + "\n**Result:** Boundary review completed\n**Tests:** not run (review only)";
+    const root = normalizeThread(facts({ output }), ctx, null).find(c => c.kind === "thread")!;
+    expect(root.outputPreview!.length).toBeLessThanOrEqual(240);
+    expect(root.reportedVerification).toEqual(["not run (review only)"]);
+    expect(root.completionResult).toBe("Boundary review completed");
+  });
   it("renders the root thread as an active card with its latest activity", () => {
     const rows = [
       workRow("command", { command: "npm test", status: "pending" }),
@@ -819,6 +827,19 @@ function conversationRow(
     ...fields,
   };
 }
+
+describe("public activity timestamps", () => {
+  it("excludes user, hidden thinking and cosmetic thread timestamps", () => {
+    const user = { ...(conversationRow("user", "private", 5) as Record<string, unknown>), createdAt: 900 };
+    const assistant = { ...(conversationRow("assistant", "public update", 3) as Record<string, unknown>), createdAt: 300 };
+    expect(latestPublicActivityAt([user, assistant] as never)).toBe(300);
+    expect(latestPublicActivityAt([user] as never)).toBeNull();
+  });
+  it("uses completed work timestamps and nested public activity", () => {
+    const work = workRow("tool", { startedAt: 100, completedAt: 700, status: "completed" });
+    expect(latestPublicActivityAt([turnRow({ children: [work] })] as never)).toBe(700);
+  });
+});
 
 describe("latestPublicUpdate", () => {
   it("uses the newest assistant-authored conversation text", () => {

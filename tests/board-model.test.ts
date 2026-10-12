@@ -112,6 +112,12 @@ describe("formatElapsed", () => {
 });
 
 describe("cardElapsedMs", () => {
+  it("does not keep timing terminal cards without source completion timing", () => {
+    for (const status of ["failed", "interrupted", "completed", "skipped"] as const) {
+      const c = card(status); c.startedAt = 100; c.completedAt = null;
+      expect(cardElapsedMs(c, 30_000_000)).toBeNull();
+    }
+  });
   const now = 1_000_000;
   it("prefers the authoritative duration when the work finished", () => {
     const c = card("completed");

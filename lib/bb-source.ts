@@ -15,6 +15,7 @@
 //   presentation labels, outputs.
 // - Statuses are mapped losslessly enough to drive column placement.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { reportedCompletion } from "./dashboard-view";
 import type {
   BoardActivity,
   BoardActivityFeed,
@@ -204,6 +205,20 @@ export function latestPublicUpdate(rows: readonly TimelineRow[]): string | null 
   const last = conversations.sort((a, b) => a.sourceSeqEnd - b.sourceSeqEnd).at(-1);
   if (last === undefined) return null;
   return publicUpdatePreview(last.text);
+}
+
+/** Work and public assistant timestamps; excludes reasoning/user/cosmetic events. */
+export function latestPublicActivityAt(rows: readonly TimelineRow[]): number | null {
+  const times: number[] = [];
+  for (const row of flattenRows(rows)) {
+    if (row.kind === "work" && !("presentation" in row && row.presentation?.suppress === true)) {
+      times.push(("completedAt" in row ? row.completedAt : null) ?? row.startedAt);
+    } else if (row.kind === "conversation" && "role" in row && row.role === "assistant") {
+      times.push(row.createdAt);
+    }
+  }
+  const valid = times.filter(at => Number.isFinite(at) && at >= 0);
+  return valid.length ? Math.max(...valid) : null;
 }
 
 /** Compact human label for a work kind (recent-activity rows). */
@@ -499,6 +514,8 @@ export function normalizeThread(
     phaseTitle: null,
     promptPreview: null,
     activity: latestActivity(facts.timeline.rows),
+    lastActivityAt: latestPublicActivityAt(facts.timeline.rows),
+    ...reportedCompletion(facts.output ?? delegation?.output),
     outputPreview:
       previewText(facts.output ?? delegation?.output ?? null, BOARD_LIMITS.outputPreviewChars) ??
       null,

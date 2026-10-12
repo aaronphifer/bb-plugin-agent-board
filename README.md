@@ -30,6 +30,11 @@ focus and the global dashboard offer other views of the same bounded state.
 - **Multi-Agent Kanban:** live state for concurrent agents and workers.
 - **Needs Attention:** structured waiting/failure states and persistent dismissal.
 - **Execution Timeline:** bounded operational events, loaded when opened.
+- **Activity freshness:** recent or quiet public reporting without inferring a stall.
+- **Completion summaries:** outcomes, results, failures and agent-reported checks.
+- **Filters and grouping:** project, repository, provider and status over visible work.
+- **Monitoring health:** connection, successful refresh and watcher status.
+- **What's New:** version highlights with persistent dismissal and later viewing.
 - Native BB threads, workflows, delegations, models and tools.
 - Optional Ollama Fleet and Redteam observation.
 - Mobile layouts, keyboard controls, and reduced-motion support.
@@ -64,6 +69,7 @@ bb plugin install .
 Neither Fleet nor Redteam is required. Declared compatibility is BB >=0.40 and
 SDK >=0.4.21; the development SDK is pinned to 0.4.34. See the honest
 [compatibility matrix](RELEASE_AUDIT.md), including historical runtime evidence.
+For the unreleased 0.7.0 candidate, see [compatibility and upgrade notes](docs/upgrade-0.7.0.md).
 
 ## Usage
 
@@ -143,6 +149,11 @@ This is a bounded latest view, not a persistent history database.
 - Physical Android release verification remains separate from automated DOM tests.
 
 ## Development
+
+The unreleased Phase 1 preview is documented in [vnext launch/testing](docs/vnext-testing.md),
+[design](docs/vnext-design.md) and [release convention](docs/release-convention.md).
+Use a separate BB data directory and ports for development; keep your stable
+installation untouched. `0.7.0-rc.1` is not a published release.
 
 ```sh
 npm ci

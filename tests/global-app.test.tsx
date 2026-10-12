@@ -60,7 +60,7 @@ function executionTimeline(overrides: Partial<ExecutionTimeline> = {}): Executio
 
 function mountGlobal(options: Parameters<typeof renderSlot>[2] = {}): RenderedSlot {
   const registration = app.navPanels[0]!;
-  return renderSlot({ component: registration.component }, { subPath: "" } as never, options);
+  return renderSlot({ component: registration.component }, { subPath: "" } as never, { ...options, rpc: { release_announcement: () => ({ version: "0.7.0-dev.1", title: "Updates", highlights: [], dismissed: true }), ...options.rpc } });
 }
 
 describe("global page registration", () => {
@@ -118,7 +118,7 @@ describe("global operations rendering", () => {
   it("shows partial source failure without breaking available cards", async () => {
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ unavailableSources: ["redteam"], partial: true }) } });
     expect(await slot.findByText("Auth refactor")).toBeTruthy();
-    expect(slot.getByText(/Temporarily unavailable: Redteam/)).toBeTruthy();
+    expect(slot.getByText(/Optional sources unavailable: Redteam/)).toBeTruthy();
     expect(slot.getByText(/global view is bounded/i)).toBeTruthy();
     slot.unmount();
   });
@@ -239,11 +239,11 @@ describe("global refresh behavior", () => {
   it("refetches on a global invalidation but ignores a scoped-only signal", async () => {
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot() } });
     await slot.findByText("Auth refactor");
-    expect(slot.inspection.rpcCalls).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_other"] });
-    expect(slot.inspection.rpcCalls).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
-    expect(slot.inspection.rpcCalls).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(2);
     slot.unmount();
   });
 
@@ -251,13 +251,13 @@ describe("global refresh behavior", () => {
     vi.useFakeTimers();
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot() } });
     await vi.runOnlyPendingTimersAsync();
-    const initial = slot.inspection.rpcCalls.length;
+    const initial = slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length;
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS);
-    expect(slot.inspection.rpcCalls.length).toBeGreaterThan(initial);
-    const beforeUnmount = slot.inspection.rpcCalls.length;
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length).toBeGreaterThan(initial);
+    const beforeUnmount = slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length;
     slot.unmount();
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS * 2);
-    expect(slot.inspection.rpcCalls).toHaveLength(beforeUnmount);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(beforeUnmount);
   });
 });
 
@@ -278,7 +278,7 @@ describe("terminal-state self-correction in the hook", () => {
       },
     });
     // The first fetch is in flight; a terminal signal arrives mid-flight.
-    expect(slot.inspection.rpcCalls).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
@@ -289,13 +289,13 @@ describe("terminal-state self-correction in the hook", () => {
     // The in-flight fetch settled, then exactly ONE trailing refetch ran —
     // the signal burst collapsed into a single retry, not a storm.
     expect(calls).toBe(2);
-    expect(slot.inspection.rpcCalls).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(2);
 
     // Signals after settle go back to the normal immediate path.
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(calls).toBe(3);
-    expect(slot.inspection.rpcCalls).toHaveLength(3); // no retry loop
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(3); // no retry loop
     slot.unmount();
   });
 });
@@ -348,7 +348,7 @@ describe("lazy shared execution timeline", () => {
     }));
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot(), execution_timeline: rpcTimeline } });
     await slot.findByText("Auth refactor");
-    expect(slot.inspection.rpcCalls).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
     expect(rpcTimeline).not.toHaveBeenCalled();
 
     const trigger = slot.getByRole("button", { name: "Open timeline for Auth refactor" });
@@ -357,7 +357,7 @@ describe("lazy shared execution timeline", () => {
     trigger.click();
     expect(await slot.findByText("The collector remains bounded.")).toBeTruthy();
     expect(rpcTimeline).toHaveBeenCalledTimes(1);
-    expect(slot.inspection.rpcCalls.filter((call) => call.method === "execution_timeline")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").filter((call) => call.method === "execution_timeline")).toHaveLength(1);
     const rows = Array.from(document.querySelectorAll("[data-event-kind]"));
     expect(rows.map((row) => row.getAttribute("data-event-kind"))).toEqual(["execution-start", "model-selected", "tool-complete", "public-update", "execution-complete"]);
     expect(document.body.textContent).toContain("read_file · src/auth.ts · 1s");
@@ -480,7 +480,7 @@ describe("attention dismissal UI", () => {
       type: item.type,
       updatedAt: item.updatedAt,
     });
-    expect(slot.inspection.rpcCalls.filter((call) => call.method === "global_dashboard")).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").filter((call) => call.method === "global_dashboard")).toHaveLength(2);
     slot.unmount();
   });
 

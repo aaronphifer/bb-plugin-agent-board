@@ -14,7 +14,7 @@ Agent Board is a generic BB execution-observability plugin with two complementar
 
 The mode is derived from the normalized snapshot by a pure view model (`lib/focus-model.ts`); no source-specific logic lives in the UI. The board is derived from authoritative sources on demand. It stores no duplicate board state and never renders reasoning/thinking events, fabricated progress percentages, or raw tool output.
 
-The global page uses the stable public `app.slots.navPanel` surface and `useBbNavigate().toThread(...)`. `lib/global-model.ts` collapses normalized source cards into independent logical executions, derives attention only from explicit structured metadata, and removes resolved conditions automatically. It does not inspect assistant prose. Stale/no-activity warnings are intentionally omitted because current timestamps cannot prove a stall reliably.
+The global page uses the stable public `app.slots.navPanel` surface and `useBbNavigate().toThread(...)`. `lib/global-model.ts` collapses normalized source cards into independent logical executions, derives attention only from explicit structured metadata, and removes resolved conditions automatically. It does not inspect assistant prose to infer attention. Phase 1 adds public-activity age and recent/quiet reporting labels; these never prove a stall or change execution status. Completion verification is explicitly agent-reported. See [the vnext design](vnext-design.md).
 
 ## Sources
 

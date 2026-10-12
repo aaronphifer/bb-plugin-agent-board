@@ -1,6 +1,6 @@
 // Global dashboard data hook. Core thread events drive immediate refreshes;
 // one slow bounded discovery check catches unrelated optional-plugin work.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import {
   BOARD_CHANGED_CHANNEL,
@@ -25,6 +25,8 @@ export function useGlobalDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [lastSignalAt, setLastSignalAt] = useState<number | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const snapshotRef = useRef<GlobalDashboardSnapshot | null>(null);
   const inflight = useRef(false);
   /**
@@ -52,6 +54,7 @@ export function useGlobalDashboard() {
         if (id !== requestId.current) return;
         snapshotRef.current = result;
         setSnapshot(result);
+        setLastRefreshAt(Date.now());
         setError(null);
       },
       (cause: unknown) => {
@@ -79,7 +82,7 @@ export function useGlobalDashboard() {
   }, [refetch]);
 
   useRealtime(BOARD_CHANGED_CHANNEL, (payload) => {
-    if (isForGlobalDashboard(payload)) refetch();
+    if (isForGlobalDashboard(payload)) { setLastSignalAt(Date.now()); refetch(); }
   });
 
   const connectionState = useRealtimeConnectionState();
@@ -129,19 +132,10 @@ export function useGlobalDashboard() {
     return () => clearInterval(timer);
   }, [refetch]);
 
-  const hasLive = useMemo(
-    () => snapshot?.active.some((execution) =>
-      execution.card.status === "running" ||
-      execution.card.status === "starting" ||
-      execution.card.status === "waiting",
-    ) ?? false,
-    [snapshot],
-  );
   useEffect(() => {
-    if (!hasLive) return;
     const timer = setInterval(() => setTick((value) => value + 1), 1_000);
     return () => clearInterval(timer);
-  }, [hasLive]);
+  }, []);
 
   return {
     snapshot,
@@ -153,5 +147,7 @@ export function useGlobalDashboard() {
     dismissAttention,
     clearDismissedAttentions,
     connectionState,
+    lastSignalAt,
+    lastRefreshAt,
   };
 }
