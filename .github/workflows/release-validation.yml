@@ -1,0 +1,77 @@
+name: Release validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests and types (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Full automated suite
+        run: npm test
+      - name: TypeScript
+        run: npm run typecheck
+      - name: Lockfile and source whitespace
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --exit-code -- package.json package-lock.json
+          git diff --check "$BASE_SHA" HEAD
+
+  package:
+    name: Build and package (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BB_TELEMETRY: 'false'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked project dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare separate official BB 0.46.0 build tools
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/bb-tools" --ignore-scripts --no-audit --no-fund bb-app@0.46.0
+          cd "$RUNNER_TEMP/bb-tools"
+          npm rebuild better-sqlite3
+      - name: Official full plugin production build
+        shell: bash
+        env:
+          BB_DATA_DIR: ${{ runner.temp }}/agent-board-build-data
+          BB_SERVER_URL: http://127.0.0.1:50886
+        run: node "$RUNNER_TEMP/bb-tools/node_modules/bb-app/dist/bb.js" plugin build
+      - name: Inspect actual release package and metadata
+        run: npm run verify:package
+      - name: Ensure build/install did not alter locked source
+        run: git diff --exit-code -- package.json package-lock.json

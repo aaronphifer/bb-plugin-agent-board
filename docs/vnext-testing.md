@@ -5,6 +5,25 @@ it is unpublished. See [candidate validation](validation-0.7.0.md) for
 cross-platform results and their limits. Never install a review build over the
 stable plugin, share its data directory, or copy its credentials into a test host.
 
+## Pull request CI
+
+The `Release validation` workflow runs for PRs targeting `main`, using official
+GitHub-hosted Ubuntu and Windows runners with Node 24. Both run locked installation,
+the full suite and typecheck. Ubuntu additionally prepares separate pinned BB
+0.46.0 tools, runs the official full production build and `npm run verify:package`.
+The inspector checks the actual tar archive, required assets, version metadata
+and private/runtime-data exclusions. It leaves its temporary package outside Git.
+
+Permissions are `contents: read`; official Actions are pinned to commit revisions
+and checkout credentials are not persisted. No secrets, self-hosted runners,
+`pull_request_target`, release/tag jobs or sensitive artifact uploads are used.
+Test failures remain failures: there are no unconditional retries or blanket
+timeout increases. A clean local Windows install took 100 seconds importing the
+large icon barrel and exceeded the existing 20-second app-hook limit. Vitest now
+prebundles that data-only dependency once; real icon exports, app code and hook
+limits are preserved. Fresh hosted timings validate this harness change.
+See [dependency assessment](dependency-security-0.7.0.md).
+
 ## Automated checks
 
 From the candidate checkout:

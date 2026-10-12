@@ -22,7 +22,8 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "engines": {
     "bb": ">=0.40",
@@ -66,13 +67,17 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
-    "hono": "^4.11.9",
+    "hono": "^4.13.7",
     "jsdom": "^30.0.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
     "vaul": "^1.1.2",
     "vitest": "^5.0.0"
+  },
+  "overrides": {
+    "undici": "8.10.2",
+    "source-map-js": "1.2.2"
   },
   "allowScripts": {
     "better-sqlite3": true,
