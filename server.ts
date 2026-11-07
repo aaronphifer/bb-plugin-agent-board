@@ -5,8 +5,8 @@
 // bb.sdk (bounded), normalizes what BB reports into BoardCards, and returns
 // a snapshot. Sources remain authoritative; only attention/release dismissal
 // preferences are durable. Collection and watcher state are ephemeral caches.
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
-import { rpcContract } from "./contract/rpc";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { boardChangedTags, GLOBAL_DASHBOARD_TAG, rpcContract } from "./contract/rpc";
 import { BoardCollector } from "./lib/collect";
 import { attachWatcher, BoardWatcher } from "./lib/watch";
 import { FleetActivePoller } from "./lib/fleet-poll";
@@ -27,16 +27,10 @@ export default async function plugin(bb: BbPluginApi) {
   const watcher = new BoardWatcher({
     publish: (payload) => {
       collector.invalidate();
+      bb.rpc.experimental_invalidate(boardChangedTags(payload));
       bb.realtime.publish(BoardWatcher.channel, payload);
     },
-    getParent: async (threadId) => {
-      try {
-        const thread = await bb.sdk.threads.get({ threadId });
-        return thread.parentThreadId ?? null;
-      } catch {
-        return null; // deleted or not visible to this plugin
-      }
-    },
+    getAncestors: createAncestorLoader(bb),
   });
   const redteamPoller = new RedteamActivePoller({
     poll: (projectId) => collector.pollRedteam(projectId),
@@ -56,9 +50,28 @@ export default async function plugin(bb: BbPluginApi) {
     changed: () => {
       collector.invalidate(false);
       // Empty roots without global-only marks all scoped and global views stale.
-      bb.realtime.publish(BoardWatcher.channel, { roots: [] });
+      const payload = { roots: [] };
+      bb.rpc.experimental_invalidate(boardChangedTags(payload));
+      bb.realtime.publish(BoardWatcher.channel, payload);
     },
   });
+
+  /** Feed the watcher and pollers what one board snapshot observed. */
+  const observeBoard = (threadId: string, snapshot: Awaited<ReturnType<BoardCollector["snapshot"]>>) => {
+    // The observed tree lets change signals be attributed to open boards
+    // (ephemeral, rebuilt every fetch).
+    const observed = [
+      threadId,
+      ...[...new Set(snapshot.cards.map((card) => card.threadId).filter((id) => id !== null))],
+    ];
+    watcher.touch(threadId, observed, snapshot.root.projectId);
+    redteamPoller.observe(
+      threadId,
+      snapshot.root.projectId,
+      collector.isRedteamActive(snapshot.root.projectId),
+    );
+    fleetPoller.observe(collector.isFleetActive());
+  };
 
   // BB threads/workflows/plans/delegations plus optional adapter cards share
   // one source-discriminated normalized contract.
@@ -67,19 +80,7 @@ export default async function plugin(bb: BbPluginApi) {
     dismiss_release_announcement: ({ version }) => releases.dismiss(version),
     board_snapshot: async ({ threadId, fresh }) => {
       const snapshot = await collector.snapshot(threadId, { fresh });
-      // Feed the watcher the observed tree so change signals can be
-      // attributed to open boards (ephemeral, rebuilt every fetch).
-      const observed = [
-        threadId,
-        ...[...new Set(snapshot.cards.map((card) => card.threadId).filter((id) => id !== null))],
-      ];
-      watcher.touch(threadId, observed, snapshot.root.projectId);
-      redteamPoller.observe(
-        threadId,
-        snapshot.root.projectId,
-        collector.isRedteamActive(snapshot.root.projectId),
-      );
-      fleetPoller.observe(collector.isFleetActive());
+      observeBoard(threadId, snapshot);
       return snapshot;
     },
     board_activity: ({ threadId, limit }) => collector.activity(threadId, limit),
@@ -91,7 +92,6 @@ export default async function plugin(bb: BbPluginApi) {
     global_dashboard: async ({ fresh }) => {
       const dismissedKeys = await dismissals.keys();
       const snapshot = await collector.globalDashboard({ fresh, dismissedKeys });
-      watcher.touchGlobal();
       redteamPoller.observeGlobal(collector.isGlobalRedteamActive());
       fleetPoller.observe(collector.isFleetActive());
       return { ...snapshot, monitoring: watcher.health() };
@@ -102,13 +102,45 @@ export default async function plugin(bb: BbPluginApi) {
       );
       // Only the global snapshot changed; per-thread caches stay warm.
       collector.invalidateGlobal();
+      bb.rpc.experimental_invalidate([GLOBAL_DASHBOARD_TAG]);
       return { dismissed };
     },
     clear_dismissed_attentions: async () => {
       await dismissals.clear();
       collector.invalidateGlobal();
+      bb.rpc.experimental_invalidate([GLOBAL_DASHBOARD_TAG]);
       return { dismissed: 0 };
     },
+  });
+
+  // A board or global page counts as open while a client watches its read:
+  // the host aborts the signal when the last client leaves or hides the tab.
+  bb.rpc.experimental_whileWatched("board_snapshot", async (read, signal) => {
+    if (!("input" in read)) return;
+    const input = rpcContract.board_snapshot.input.safeParse(read.input);
+    if (!input.success) return;
+    const { threadId } = input.data;
+    watcher.watch(threadId, signal);
+    redteamPoller.watch(threadId, signal);
+    fleetPoller.watch(signal);
+    try {
+      const snapshot = await collector.snapshot(threadId);
+      if (!signal.aborted) observeBoard(threadId, snapshot);
+    } catch {
+      // The read itself reports the failure; the next successful read observes.
+    }
+  });
+  bb.rpc.experimental_whileWatched("global_dashboard", (_read, signal) => {
+    watcher.watchGlobal(signal);
+    redteamPoller.watchGlobal(signal);
+    fleetPoller.watch(signal);
+    redteamPoller.observeGlobal(collector.isGlobalRedteamActive());
+    fleetPoller.observe(collector.isFleetActive());
+    // BB lifecycle events are immediate. This slow check exists only to
+    // discover a new Redteam run, whose changes cannot be subscribed to
+    // cross-plugin.
+    const discovery = setInterval(() => bb.rpc.experimental_invalidate([GLOBAL_DASHBOARD_TAG]), GLOBAL_DISCOVERY_INTERVAL_MS);
+    signal.addEventListener("abort", () => clearInterval(discovery), { once: true });
   });
 
   // Invalidate open boards on real BB changes (coalesced, no polling).
@@ -159,6 +191,49 @@ export default async function plugin(bb: BbPluginApi) {
     watcher.dispose();
     bb.log.info("disposed");
   });
+}
+
+const GLOBAL_DISCOVERY_INTERVAL_MS = 20_000;
+const ANCESTOR_BATCH_LIMIT = 200;
+
+/**
+ * Batch ancestor lookups made in the same tick into one
+ * `experimental_listAncestors` call (200 ids per request). A failed or
+ * omitted lookup resolves to no ancestors.
+ */
+function createAncestorLoader(bb: BbPluginApi): (threadId: string) => Promise<readonly string[]> {
+  let pending = new Map<string, Array<(ancestors: readonly string[]) => void>>();
+  let scheduled = false;
+  const flush = async () => {
+    scheduled = false;
+    const batch = pending;
+    pending = new Map();
+    const ids = [...batch.keys()];
+    const ancestorsById = new Map<string, readonly string[]>();
+    for (let start = 0; start < ids.length; start += ANCESTOR_BATCH_LIMIT) {
+      try {
+        const result = await bb.sdk.threads.experimental_listAncestors({
+          threadIds: ids.slice(start, start + ANCESTOR_BATCH_LIMIT),
+        });
+        for (const entry of result.threads) ancestorsById.set(entry.threadId, entry.ancestorIds);
+      } catch {
+        // Unresolvable threads are treated as outside every watched tree.
+      }
+    }
+    for (const [id, resolvers] of batch) {
+      for (const resolve of resolvers) resolve(ancestorsById.get(id) ?? []);
+    }
+  };
+  return (threadId) =>
+    new Promise((resolve) => {
+      const resolvers = pending.get(threadId);
+      if (resolvers) resolvers.push(resolve);
+      else pending.set(threadId, [resolve]);
+      if (!scheduled) {
+        scheduled = true;
+        setTimeout(() => void flush(), 0);
+      }
+    });
 }
 
 /** Compact text rendering of a snapshot for CLI use. */

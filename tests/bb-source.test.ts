@@ -8,6 +8,7 @@ import {
   normalizeThread,
   recentActivityFeed,
   threadBoardStatus,
+  timelineGoal,
   waitingOnLabel,
   workKindLabel,
   type NormalizeContext,
@@ -913,5 +914,26 @@ describe("latestPublicUpdate", () => {
       { kind: "conversation", role: "assistant", text: null, sourceSeqEnd: 5 },
     ] as never;
     expect(latestPublicUpdate(rows)).toBeNull();
+  });
+});
+
+describe("timelineGoal", () => {
+  const goal = { objective: "Ship it", status: "usageLimited", tokensUsed: 10, tokenBudget: null, timeUsedSeconds: 5 };
+  const base = { rows: [], extensionStates: {} } as unknown as TimelineResponse;
+
+  it("reads the Codex goal from the timeline's extension states", () => {
+    const timeline = { ...base, extensionStates: { "provider-codex/goal": goal } } as unknown as TimelineResponse;
+    expect(timelineGoal(timeline)).toEqual(goal);
+  });
+
+  it("falls back to the goal field hosts before BB 0.49 send", () => {
+    const timeline = { rows: [], goal: { ...goal, status: "active", tokenBudget: undefined } } as unknown as TimelineResponse;
+    expect(timelineGoal(timeline)).toEqual({ ...goal, status: "active", tokenBudget: null });
+  });
+
+  it("returns null for a cleared or unreadable goal", () => {
+    expect(timelineGoal({ ...base, extensionStates: { "provider-codex/goal": null } } as unknown as TimelineResponse)).toBeNull();
+    expect(timelineGoal({ ...base, extensionStates: { "provider-codex/goal": { objective: 1 } } } as unknown as TimelineResponse)).toBeNull();
+    expect(timelineGoal(base)).toBeNull();
   });
 });

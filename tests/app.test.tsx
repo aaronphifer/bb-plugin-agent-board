@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-// Frontend tests: render the threadPanelAction slot through the official
-// plugin app testing harness — columns/cards, realtime signal refetch,
+// Frontend tests: render the thread action tab through the official
+// plugin app testing harness — columns/cards, tag invalidation refetch,
 // reconnect reconcile, navigation, loading/error/empty states.
 import { describe, expect, it, beforeEach } from "vitest";
+import { waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot, type CapturedPluginApp, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
+import { boardTabComponent } from "./board-tab";
 import type { BoardCard, BoardSnapshot, ExecutionTimeline } from "@/contract/rpc";
-import { BOARD_CHANGED_CHANNEL } from "@/contract/rpc";
 
 let app: CapturedPluginApp;
 
@@ -135,9 +136,8 @@ function timelineFixture(overrides: Partial<ExecutionTimeline> = {}): ExecutionT
 function mountBoard(
   options: Parameters<typeof renderSlot>[2] = {},
 ): RenderedSlot {
-  const registration = app.threadPanelActions[0]!;
   return renderSlot(
-    { component: registration.component },
+    { component: boardTabComponent(app) },
     { threadId: "thr_root", params: null } as never,
     options,
   );
@@ -168,11 +168,16 @@ function kanbanSnapshot(cards: BoardCard[]): BoardSnapshot {
 }
 
 describe("slot registration", () => {
-  it("registers exactly one thread panel action", () => {
-    expect(app.threadPanelActions).toHaveLength(1);
-    expect(app.threadPanelActions[0]!.id).toBe("agent-board");
-    expect(app.threadPanelActions[0]!.title).toBe("Agent Board");
-    expect(app.threadPanelActions[0]!.icon).toBe("ListTodo");
+  it("registers exactly one thread action tab", () => {
+    const threadTabs = app.tabs.filter((tab) => tab.context.kind === "thread");
+    expect(threadTabs).toHaveLength(1);
+    expect(threadTabs[0]).toMatchObject({
+      id: "agent-board",
+      availability: "action",
+      title: "Agent Board",
+      icon: "ListTodo",
+      layout: "flush",
+    });
   });
 });
 
@@ -242,66 +247,57 @@ describe("board rendering", () => {
   });
 });
 
-describe("realtime invalidation", () => {
-  it("refetches when a signal names this board", async () => {
+describe("board invalidation", () => {
+  it("refetches when this board's tag is invalidated", async () => {
     const slot = mountBoard({
       rpc: { board_snapshot: () => snapshotFixture() },
     });
     await slot.findAllByText("Refactor the auth flow");
     expect(slot.inspection.rpcCalls.length).toBe(1);
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_root"] });
-    await slot.findAllByText("Refactor the auth flow");
-    expect(slot.inspection.rpcCalls.length).toBe(2);
+    await slot.behavior.experimental_invalidateRpc(["board:thr_root"]);
+    await waitFor(() => expect(slot.inspection.rpcCalls.length).toBe(2));
 
     slot.unmount();
   });
 
-  it("ignores signals scoped to other roots", async () => {
+  it("refetches when every board is invalidated", async () => {
+    const slot = mountBoard({ rpc: { board_snapshot: () => snapshotFixture() } });
+    await slot.findAllByText("Refactor the auth flow");
+
+    await slot.behavior.experimental_invalidateRpc(["board"]);
+    await waitFor(() => expect(slot.inspection.rpcCalls.length).toBe(2));
+
+    slot.unmount();
+  });
+
+  it("ignores invalidations of other roots and the global page", async () => {
     const slot = mountBoard({
       rpc: { board_snapshot: () => snapshotFixture() },
     });
     await slot.findAllByText("Refactor the auth flow");
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_other"] });
+    await slot.behavior.experimental_invalidateRpc(["board:thr_other"]);
+    await slot.behavior.experimental_invalidateRpc(["global-dashboard"]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(slot.inspection.rpcCalls.length).toBe(1);
 
     slot.unmount();
   });
 
-  it("ignores global-only invalidations", async () => {
-    const slot = mountBoard({ rpc: { board_snapshot: () => snapshotFixture() } });
-    await slot.findAllByText("Refactor the auth flow");
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(slot.inspection.rpcCalls.length).toBe(1);
-    slot.unmount();
-  });
-
-  it("refetches defensively on a malformed signal", async () => {
+  it("refreshes with fresh: true, then serves that snapshot to the board read", async () => {
     const slot = mountBoard({
       rpc: { board_snapshot: () => snapshotFixture() },
     });
     await slot.findAllByText("Refactor the auth flow");
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { nonsense: true });
-    expect(slot.inspection.rpcCalls.length).toBe(2);
-
-    slot.unmount();
-  });
-
-  it("reconciles after a realtime reconnect", async () => {
-    const slot = mountBoard({
-      rpc: { board_snapshot: () => snapshotFixture() },
-      realtimeConnectionState: "connected",
-    });
-    await slot.findAllByText("Refactor the auth flow");
-    expect(slot.inspection.rpcCalls.length).toBe(1);
-
-    await slot.behavior.setRealtimeConnectionState("reconnecting");
-    await slot.behavior.setRealtimeConnectionState("connected");
-    expect(slot.inspection.rpcCalls.length).toBe(2);
+    slot.getByRole("button", { name: /refresh/i }).click();
+    await waitFor(() => expect(slot.inspection.rpcCalls.length).toBe(3));
+    expect(slot.inspection.rpcCalls.map((call) => call.input)).toEqual([
+      { threadId: "thr_root" },
+      { threadId: "thr_root", fresh: true },
+      { threadId: "thr_root" },
+    ]);
 
     slot.unmount();
   });
@@ -668,10 +664,11 @@ describe("single-agent focus mode", () => {
     await slot.findByTestId("focus-hero");
     const hero = slot.getByTestId("focus-hero");
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_root"] });
+    await slot.behavior.experimental_invalidateRpc(["board:thr_root"]);
 
     // The outgoing and incoming lines coexist only during the one-shot swap.
     const activity = slot.getByTestId("hero-activity");
+    await waitFor(() => expect(activity.textContent).toContain("Writing report.md"));
     expect(activity.textContent).toContain("Reading src/dispatcher.js");
     expect(activity.textContent).toContain("Writing report.md");
     // The hero itself never remounts for a text change.
@@ -696,7 +693,7 @@ describe("single-agent focus mode", () => {
     });
     await slot.findByTestId("single-agent-focus");
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_root"] });
+    await slot.behavior.experimental_invalidateRpc(["board:thr_root"]);
 
     expect(await slot.findByText("ACTIVE AGENTS")).toBeTruthy();
     expect(slot.queryByTestId("single-agent-focus")).toBeNull();
@@ -722,7 +719,7 @@ describe("single-agent focus mode", () => {
     await slot.findByText("ACTIVE AGENTS");
     expect(slot.getAllByTestId("kanban-live-strip")).toHaveLength(2);
 
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_root"] });
+    await slot.behavior.experimental_invalidateRpc(["board:thr_root"]);
 
     const focus = await slot.findByTestId("single-agent-focus");
     expect(slot.queryByText("ACTIVE AGENTS")).toBeNull();

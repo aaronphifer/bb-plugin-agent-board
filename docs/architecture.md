@@ -36,9 +36,13 @@ Redteam timelines reuse the same public observability snapshot and generic UI. O
 
 ## Realtime and polling
 
-BB changes use the existing public thread lifecycle/entity stream, a 400 ms coalescing watcher, and the plugin's `agent-board-changed` frontend signal.
+BB changes use the existing public thread lifecycle/entity stream and a 400 ms coalescing watcher. The board and global page read their snapshots with `experimental_useRpcQuery`; the watcher invalidates the `board:<rootThreadId>` and `global-dashboard` tags with `bb.rpc.experimental_invalidate`, and the host refetches open views and refreshes them after reconnects. The `agent-board-changed` realtime signal remains for the Timeline dialog and the global page's monitoring health line.
 
-SDK 0.4.21 has no supported cross-plugin realtime subscription. BB changes therefore opportunistically re-check Redteam. After a snapshot discovers a queued/running Redteam scan, a server-side fallback probes that project/global snapshot every 3 seconds. Requests share the Redteam source's inflight guard and 1.5-second TTL and never overlap. Polling stops when observed scans are terminal or the watched lease expires. While the global page is mounted, one slow 20-second snapshot refresh discovers brand-new Redteam work that has no BB event; unmounting clears that timer. BB thread changes remain event-driven.
+A board or global page counts as open while a client watches its read: `bb.rpc.experimental_whileWatched` starts the watcher, Redteam and Fleet bookkeeping for that read and aborts it when the last client leaves or hides the tab. A thread the board has not seen yet (for example a grandchild created between snapshots) is matched to its root with one batched `experimental_listAncestors` read per tick.
+
+There is no supported cross-plugin realtime subscription. BB changes therefore opportunistically re-check Redteam. After a snapshot discovers a queued/running Redteam scan, a server-side fallback probes that project/global snapshot every 3 seconds. Requests share the Redteam source's inflight guard and 1.5-second TTL and never overlap. Polling stops when observed scans are terminal or the view's watched read ends. While the global page is watched, the backend invalidates it every 20 seconds to discover brand-new Redteam work that has no BB event. BB thread changes remain event-driven.
+
+The thread tree is read with one `experimental_listDescendants` call and one batched `threads.list({ threadIds })` row read; the per-thread timeline, model, output, event and queue reads run in parallel, six threads at a time.
 
 ## Bounds
 
@@ -52,11 +56,11 @@ The shared Timeline uses the existing responsive dialog/drawer primitive. Rows a
 
 ## Compatibility
 
-- BB engine: `>=0.40`
-- Runtime Plugin SDK floor: `>=0.4.21`
-- Current development types: 0.4.34
+- BB engine: `>=0.47`
+- Runtime Plugin SDK floor: `>=0.6.73`
+- Current development types: 0.6.132
 
-Server modules use relative imports and avoid `@/` aliases so the BB 0.40 daemon loader can load source when artifact SDK versions differ. Newer lifecycle names are registered opportunistically, and missing newer thread fields degrade gracefully.
+Server modules use relative imports and avoid `@/` aliases so the daemon loader can load source when artifact SDK versions differ. Newer lifecycle names are registered opportunistically, and missing newer thread fields degrade gracefully.
 
 ## Commands
 
@@ -119,7 +123,7 @@ All views share a Fleet cache and one physical inflight request. Idle cache TTL
 is 20 seconds, matching the existing global discovery cycle. New route-tool
 activity can refresh discovery at a bounded two-second TTL. Once active jobs are discovered,
 one 2.5-second loop polls regardless of job count, stops at terminal state or
-source failure, and expires unused watches after 90 seconds. No idle Fleet timer
+source failure, and stops when no board or global page is watched. No idle Fleet timer
 is created. Meaningful changes invalidate board/timeline generations and publish
 Agent Board's normal signal. Invalidation during a source read discards its
 result and retries sequentially; stale RUNNING cannot re-enter the cache.

@@ -66,8 +66,8 @@ bb plugin build
 bb plugin install .
 ```
 
-Neither Fleet nor Redteam is required. Declared compatibility is BB >=0.40 and
-SDK >=0.4.21; the development SDK is pinned to 0.4.34. See the honest
+Neither Fleet nor Redteam is required. Declared compatibility is BB >=0.47 and
+SDK >=0.6.73; the development SDK is pinned to 0.6.132. See the honest
 [compatibility matrix](RELEASE_AUDIT.md), including historical runtime evidence.
 For the prepared, unpublished 0.7.0 source, see [compatibility and upgrade notes](docs/upgrade-0.7.0.md).
 

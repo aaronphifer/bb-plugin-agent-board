@@ -1,5 +1,5 @@
 // Watcher tests: relevance filtering, candidate selection, parentage
-// lookups, rate-limited lookups, debounce coalescing, TTL pruning, dispose.
+// lookups, rate-limited lookups, debounce coalescing, watched lifetimes, dispose.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BoardWatcher,
@@ -15,25 +15,47 @@ interface Recorded {
   lookups: string[];
 }
 
+const ANCESTORS: Record<string, string[]> = {
+  thr_new: ["thr_root"],
+  thr_grandchild: ["thr_unseen_child", "thr_root"],
+};
+
 function makeWatcher(overrides?: {
   now?: () => number;
   debounceMs?: number;
   lookupGapMs?: number;
-  watchedTtlMs?: number;
 }) {
   const recorded: Recorded = { publishes: [], lookups: [] };
   const watcher = new BoardWatcher({
     publish: (payload) => recorded.publishes.push(payload),
-    getParent: async (threadId) => {
+    getAncestors: async (threadId) => {
       recorded.lookups.push(threadId);
-      return threadId === "thr_new" ? "thr_root" : null;
+      return ANCESTORS[threadId] ?? [];
     },
     now: overrides?.now,
     debounceMs: overrides?.debounceMs,
     lookupGapMs: overrides?.lookupGapMs,
-    watchedTtlMs: overrides?.watchedTtlMs,
   });
   return { watcher, recorded };
+}
+
+/** Watch a root as an open board's watched read does, then record its tree. */
+function watchRoot(
+  watcher: BoardWatcher,
+  rootThreadId: string,
+  threads: string[],
+  projectId: string | null,
+): AbortController {
+  const controller = new AbortController();
+  watcher.watch(rootThreadId, controller.signal);
+  watcher.touch(rootThreadId, threads, projectId);
+  return controller;
+}
+
+function watchGlobal(watcher: BoardWatcher): AbortController {
+  const controller = new AbortController();
+  watcher.watchGlobal(controller.signal);
+  return controller;
 }
 
 function changed(id: string | undefined, fields: Partial<ThreadChangedEvent> = {}): ThreadChangedEvent {
@@ -51,8 +73,8 @@ describe("watcher health", () => {
   });
   it("records publication errors and recovers after a successful signal", async () => {
     let fail = true; let now = 10;
-    const watcher = new BoardWatcher({ publish: () => { if (fail) throw new Error("private source detail"); }, getParent: async () => null, now: () => now });
-    watcher.touchGlobal(); await watcher.handleChanged(changed("thread")); expect(() => watcher.flush()).not.toThrow();
+    const watcher = new BoardWatcher({ publish: () => { if (fail) throw new Error("private source detail"); }, getAncestors: async () => [], now: () => now });
+    watchGlobal(watcher); await watcher.handleChanged(changed("thread")); expect(() => watcher.flush()).not.toThrow();
     expect(watcher.health()).toMatchObject({ status: "degraded", lastErrorAt: 10 });
     fail = false; now = 20; await watcher.handleChanged(changed("thread")); watcher.flush();
     expect(watcher.health()).toMatchObject({ status: "watching", lastEventAt: 20, lastPublishedAt: 20 }); expect(JSON.stringify(watcher.health())).not.toContain("private"); watcher.dispose();
@@ -70,7 +92,7 @@ afterEach(() => {
 describe("invalidation for observed threads", () => {
   it("marks a watched root dirty when an observed thread changes", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root", "thr_child"], null);
+    watchRoot(watcher, "thr_root", ["thr_root", "thr_child"], null);
     await watcher.handleChanged(changed("thr_child", { changes: ["status-changed"] }));
     watcher.flush();
 
@@ -80,7 +102,7 @@ describe("invalidation for observed threads", () => {
 
   it("ignores cosmetic changes and pure reasoning deltas", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_root", { changes: ["read-state-changed"] }));
     await watcher.handleChanged(changed("thr_root", { changes: ["pin-state-changed"] }));
     await watcher.handleChanged(
@@ -95,8 +117,8 @@ describe("invalidation for observed threads", () => {
 
   it("refreshes every board on an id-less broadcast", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_a", ["thr_a"], null);
-    watcher.touch("thr_b", ["thr_b"], null);
+    watchRoot(watcher, "thr_a", ["thr_a"], null);
+    watchRoot(watcher, "thr_b", ["thr_b"], null);
     await watcher.handleChanged(changed(undefined, { changes: ["history-rewritten"] }));
     watcher.flush();
     expect(recorded.publishes).toEqual([{ roots: ["thr_a", "thr_b"] }]);
@@ -106,7 +128,7 @@ describe("invalidation for observed threads", () => {
 describe("candidate filtering and parentage", () => {
   it("skips a project-mismatched root without a parentage lookup", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], "p1");
+    watchRoot(watcher, "thr_root", ["thr_root"], "p1");
     await watcher.handleChanged(
       changed("thr_new", { changes: ["status-changed"], metadata: { projectId: "p2" } }),
     );
@@ -117,7 +139,7 @@ describe("candidate filtering and parentage", () => {
 
   it("resolves a new descendant through a bounded parentage lookup", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_new", { changes: ["status-changed"] }));
     watcher.flush();
 
@@ -131,7 +153,7 @@ describe("candidate filtering and parentage", () => {
 
   it("rate-limits parentage lookups for unresolved threads", async () => {
     const { watcher, recorded } = makeWatcher({ lookupGapMs: 2_000 });
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_unknown", { changes: ["status-changed"] }));
     await watcher.handleChanged(changed("thr_unknown", { changes: ["events-appended"] }));
     expect(recorded.lookups).toEqual(["thr_unknown"]); // one lookup within the gap
@@ -143,7 +165,7 @@ describe("candidate filtering and parentage", () => {
 
   it("keeps unrelated threads out of the board", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root", "thr_child"], null);
+    watchRoot(watcher, "thr_root", ["thr_root", "thr_child"], null);
     await watcher.handleChanged(changed("thr_elsewhere", { changes: ["status-changed"] }));
     watcher.flush();
     expect(recorded.lookups).toEqual(["thr_elsewhere"]);
@@ -154,7 +176,7 @@ describe("candidate filtering and parentage", () => {
 describe("lifecycle events", () => {
   it("uses the event's parent when provided (no lookup)", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleLifecycle({
       id: "thr_new",
       parentThreadId: "thr_root",
@@ -165,9 +187,27 @@ describe("lifecycle events", () => {
     expect(recorded.publishes).toEqual([{ roots: ["thr_root"] }]);
   });
 
+  it("reaches the root for a thread created below a parent the board has not seen", async () => {
+    const { watcher, recorded } = makeWatcher();
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
+    await watcher.handleLifecycle({ id: "thr_grandchild", parentThreadId: "thr_unseen_child" }, "created");
+    watcher.flush();
+    expect(recorded.lookups).toEqual(["thr_grandchild"]);
+    expect(recorded.publishes).toEqual([{ roots: ["thr_root"] }]);
+  });
+
+  it("never looks up a root thread's ancestors", async () => {
+    const { watcher, recorded } = makeWatcher();
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
+    await watcher.handleLifecycle({ id: "thr_other_root", parentThreadId: null }, "created");
+    watcher.flush();
+    expect(recorded.lookups).toEqual([]);
+    expect(recorded.publishes).toEqual([]);
+  });
+
   it("ignores lifecycle events for threads outside the tree", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleLifecycle({ id: "thr_far", parentThreadId: "thr_other" });
     watcher.flush();
     expect(recorded.publishes).toEqual([]);
@@ -177,7 +217,7 @@ describe("lifecycle events", () => {
 describe("debounce and coalescing", () => {
   it("coalesces many changes into one publish per window", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     await watcher.handleChanged(changed("thr_root", { changes: ["events-appended"] }));
     await watcher.handleChanged(changed("thr_root", { changes: ["events-appended"] }));
@@ -189,8 +229,8 @@ describe("debounce and coalescing", () => {
 
   it("debounces across roots into a single signal", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_a", ["thr_a"], null);
-    watcher.touch("thr_b", ["thr_b"], null);
+    watchRoot(watcher, "thr_a", ["thr_a"], null);
+    watchRoot(watcher, "thr_b", ["thr_b"], null);
     await watcher.handleChanged(changed("thr_a", { changes: ["status-changed"] }));
     vi.advanceTimersByTime(200);
     await watcher.handleChanged(changed("thr_b", { changes: ["status-changed"] }));
@@ -201,20 +241,44 @@ describe("debounce and coalescing", () => {
 });
 
 describe("registry lifecycle", () => {
-  it("prunes watched roots after the TTL", async () => {
-    let now = 0;
-    const { watcher, recorded } = makeWatcher({ now: () => now, watchedTtlMs: 90_000 });
-    watcher.touch("thr_root", ["thr_root"], null);
-    now = 91_000;
-    watcher.touch("thr_other", ["thr_other"], null); // triggers prune
+  it("stops watching a root when its last watched read ends", async () => {
+    const { watcher, recorded } = makeWatcher();
+    const first = watchRoot(watcher, "thr_root", ["thr_root"], null);
+    const second = watchRoot(watcher, "thr_root", ["thr_root"], null);
+    first.abort();
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.flush();
-    expect(recorded.publishes).toEqual([]); // thr_root was pruned
+    expect(recorded.publishes).toEqual([{ roots: ["thr_root"] }]); // one client still watches
+    second.abort();
+    await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
+    watcher.flush();
+    expect(recorded.publishes).toEqual([{ roots: ["thr_root"] }]);
+    expect(watcher.isWatching("thr_root")).toBe(false);
+  });
+
+  it("ignores snapshots of roots nobody watches", async () => {
+    const { watcher, recorded } = makeWatcher();
+    watcher.touch("thr_root", ["thr_root"], null);
+    await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
+    watcher.flush();
+    expect(recorded.publishes).toEqual([]);
+  });
+
+  it("stops global signals when the global page's watched read ends", async () => {
+    const { watcher, recorded } = makeWatcher();
+    const global = watchGlobal(watcher);
+    await watcher.handleChanged(changed("thr_any", { changes: ["status-changed"] }));
+    watcher.flush();
+    expect(recorded.publishes).toEqual([{ roots: [], global: true }]);
+    global.abort();
+    await watcher.handleChanged(changed("thr_any", { changes: ["status-changed"] }));
+    watcher.flush();
+    expect(recorded.publishes).toHaveLength(1);
   });
 
   it("stops handling events and publishing after dispose", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     watcher.dispose();
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.flush();
@@ -223,7 +287,7 @@ describe("registry lifecycle", () => {
 
   it("cancels the pending debounce on dispose", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.dispose();
     vi.advanceTimersByTime(1_000);
@@ -234,7 +298,7 @@ describe("registry lifecycle", () => {
 describe("terminal-state reconciliation", () => {
   it("re-publishes the same payload once, after the flush, for a terminal status change", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(
       changed("thr_root", {
         changes: ["status-changed"],
@@ -252,7 +316,7 @@ describe("terminal-state reconciliation", () => {
 
   it("treats turn/completed appended events as terminal", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(
       changed("thr_root", {
         changes: ["events-appended"],
@@ -277,7 +341,7 @@ describe("terminal-state reconciliation", () => {
     ];
     for (const [kind, expected] of cases) {
       const { watcher, recorded } = makeWatcher();
-      watcher.touch("thr_root", ["thr_root"], null);
+      watchRoot(watcher, "thr_root", ["thr_root"], null);
       await watcher.handleLifecycle({ id: "thr_new", parentThreadId: "thr_root" }, kind);
       watcher.flush();
       vi.advanceTimersByTime(1_500);
@@ -288,7 +352,7 @@ describe("terminal-state reconciliation", () => {
 
   it("does not schedule a reconciliation for non-terminal flushes", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.flush();
     vi.advanceTimersByTime(10_000);
@@ -297,8 +361,8 @@ describe("terminal-state reconciliation", () => {
 
   it("replaces — never stacks — the pending reconciliation across terminal flushes", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_a", ["thr_a"], null);
-    watcher.touch("thr_b", ["thr_b"], null);
+    watchRoot(watcher, "thr_a", ["thr_a"], null);
+    watchRoot(watcher, "thr_b", ["thr_b"], null);
     await watcher.handleChanged(
       changed("thr_a", { changes: ["status-changed"], metadata: { statusChange: { status: "idle" } } }),
     );
@@ -318,8 +382,8 @@ describe("terminal-state reconciliation", () => {
 
   it("merges a scoped and global terminal flush into a single reconciled payload", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
-    watcher.touchGlobal();
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
+    watchGlobal(watcher);
     await watcher.handleChanged(
       changed("thr_root", {
         changes: ["status-changed"],
@@ -336,7 +400,7 @@ describe("terminal-state reconciliation", () => {
 
   it("cancels the pending reconciliation on dispose", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(
       changed("thr_root", { changes: ["status-changed"], metadata: { statusChange: { status: "idle" } } }),
     );
@@ -356,7 +420,7 @@ describe("terminal-state reconciliation", () => {
     watcher.flush();
     expect(recorded.publishes).toEqual([]);
     // Later, a non-terminal change must not inherit the earlier terminal flag.
-    watcher.touch("thr_root", ["thr_root"], null);
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.flush();
     vi.advanceTimersByTime(5_000);
@@ -386,7 +450,7 @@ describe("channel contract", () => {
 describe("global dashboard invalidation", () => {
   it("invalidates a watched global page for any relevant thread change", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touchGlobal();
+    watchGlobal(watcher);
     await watcher.handleChanged(changed("thr_any", { changes: ["status-changed"] }));
     watcher.flush();
     expect(recorded.publishes).toEqual([{ roots: [], global: true }]);
@@ -395,8 +459,8 @@ describe("global dashboard invalidation", () => {
 
   it("coalesces scoped and global invalidation in one signal", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touch("thr_root", ["thr_root"], null);
-    watcher.touchGlobal();
+    watchRoot(watcher, "thr_root", ["thr_root"], null);
+    watchGlobal(watcher);
     await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
     watcher.flush();
     expect(recorded.publishes).toEqual([{ roots: ["thr_root"], global: true }]);
@@ -404,19 +468,10 @@ describe("global dashboard invalidation", () => {
 
   it("does not wake the global page for ignored reasoning deltas", async () => {
     const { watcher, recorded } = makeWatcher();
-    watcher.touchGlobal();
+    watchGlobal(watcher);
     await watcher.handleChanged(changed("thr_root", { changes: ["events-appended"], metadata: { eventTypes: ["item/reasoning/textDelta"] } }));
     watcher.flush();
     expect(recorded.publishes).toEqual([]);
   });
 
-  it("expires the global watch lease", async () => {
-    let now = 0;
-    const { watcher, recorded } = makeWatcher({ now: () => now, watchedTtlMs: 100 });
-    watcher.touchGlobal();
-    now = 101;
-    await watcher.handleChanged(changed("thr_root", { changes: ["status-changed"] }));
-    watcher.flush();
-    expect(recorded.publishes).toEqual([]);
-  });
 });

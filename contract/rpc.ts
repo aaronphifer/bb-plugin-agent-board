@@ -183,7 +183,7 @@ export const boardRootSchema = z.object({
   goal: z
     .object({
       objective: z.string(),
-      status: z.enum(["active", "paused", "budgetLimited", "complete"]),
+      status: z.enum(["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]),
       tokensUsed: z.number(),
       tokenBudget: z.number().nullable(),
       timeUsedSeconds: z.number(),
@@ -395,6 +395,21 @@ export const boardChangedPayloadSchema = z.object({
   global: z.boolean().optional(),
 });
 
+/** Query tags: every board read, one root's board read, and the global page read. */
+export const BOARD_TAG = "board";
+export const GLOBAL_DASHBOARD_TAG = "global-dashboard";
+export function boardTag(rootThreadId: string): string {
+  return `board:${rootThreadId}`;
+}
+
+/** Tags made stale by one watcher invalidation payload (same rules the realtime listeners apply). */
+export function boardChangedTags(payload: z.infer<typeof boardChangedPayloadSchema>): string[] {
+  if (payload.roots.length === 0) {
+    return payload.global === true ? [GLOBAL_DASHBOARD_TAG] : [BOARD_TAG, GLOBAL_DASHBOARD_TAG];
+  }
+  return [...payload.roots.map(boardTag), ...(payload.global === true ? [GLOBAL_DASHBOARD_TAG] : [])];
+}
+
 export const rpcContract = {
   release_announcement: {
     input: z.object({}),
@@ -412,6 +427,7 @@ export const rpcContract = {
   board_snapshot: {
     input: z.object({ threadId: z.string().min(1), fresh: z.boolean().optional() }),
     output: boardSnapshotSchema,
+    tags: (input: { threadId: string }) => [BOARD_TAG, boardTag(input.threadId)],
   },
   /** Bounded recent-activity tail for one thread (details expansion). */
   board_activity: {
@@ -430,6 +446,7 @@ export const rpcContract = {
   global_dashboard: {
     input: z.object({ fresh: z.boolean().optional() }),
     output: globalDashboardSnapshotSchema,
+    tags: () => [GLOBAL_DASHBOARD_TAG],
   },
   /**
    * Presentation-only: hide one attention item from the global dashboard.

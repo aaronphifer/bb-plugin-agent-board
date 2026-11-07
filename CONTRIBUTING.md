@@ -1,7 +1,7 @@
 # Contributing
 
 Use Node.js 24 LTS, npm, and the BB CLI. Release preparation uses Node 24.20.0;
-older Node versions have not been verified. The public SDK is locked at 0.4.34.
+older Node versions have not been verified. The public SDK is locked at 0.6.132.
 
 ```sh
 npm ci

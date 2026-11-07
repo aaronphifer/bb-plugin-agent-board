@@ -16,12 +16,15 @@
 // - Statuses are mapped losslessly enough to drive column placement.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { reportedCompletion } from "./dashboard-view";
-import type {
-  BoardActivity,
-  BoardActivityFeed,
-  BoardActivityFeedEntry,
-  BoardCard,
-  BoardCardStatus,
+import { z } from "zod";
+import {
+  boardRootSchema,
+  type BoardActivity,
+  type BoardActivityFeed,
+  type BoardActivityFeedEntry,
+  type BoardCard,
+  type BoardCardStatus,
+  type BoardRoot,
 } from "../contract/rpc";
 import {
   BOARD_LIMITS,
@@ -45,7 +48,7 @@ type Threads = Sdk["threads"];
 export type ThreadListRow = Awaited<ReturnType<Threads["list"]>>[number];
 /** threads.get() result (with or without includes). */
 export type ThreadGetResult = Awaited<ReturnType<Threads["get"]>>;
-export type TimelineResponse = Awaited<ReturnType<Threads["timeline"]>>;
+export type TimelineResponse = Exclude<Awaited<ReturnType<Threads["timeline"]>>, { delta: unknown }>;
 export type TimelineRow = TimelineResponse["rows"][number];
 export type TimelineSystemRow = Extract<TimelineRow, { kind: "system" }>;
 export type TimelineConversationRow = Extract<TimelineRow, { kind: "conversation" }>;
@@ -945,6 +948,23 @@ export function activityFromEvents(events: readonly ThreadEventRow[]): BoardActi
 // Root summary
 // ---------------------------------------------------------------------------
 
+/**
+ * BB 0.49 moved the Codex goal out of the timeline's typed `goal` field into
+ * the Codex plugin's extension state. Read the extension state first and fall
+ * back to the field older hosts still send.
+ */
+const CODEX_GOAL_EXTENSION_KIND = "provider-codex/goal";
+const timelineGoalSchema = boardRootSchema.shape.goal.unwrap().extend({
+  tokenBudget: z.number().nullable().optional().transform((value) => value ?? null),
+});
+
+export function timelineGoal(timeline: TimelineResponse): BoardRoot["goal"] {
+  const extensionGoal = timeline.extensionStates?.[CODEX_GOAL_EXTENSION_KIND];
+  const legacyGoal = "goal" in timeline ? timeline.goal : undefined;
+  const parsed = timelineGoalSchema.safeParse(extensionGoal ?? legacyGoal);
+  return parsed.success ? parsed.data : null;
+}
+
 export function rootSummary(
   facts: ThreadFacts,
   ctx: NormalizeContext,
@@ -959,17 +979,11 @@ export function rootSummary(
   projectId: string | null;
   createdAt: number | null;
   updatedAt: number | null;
-  goal: {
-    objective: string;
-    status: "active" | "paused" | "budgetLimited" | "complete";
-    tokensUsed: number;
-    tokenBudget: number | null;
-    timeUsedSeconds: number;
-  } | null;
+  goal: BoardRoot["goal"];
   contextWindowUsedTokens: number | null;
   contextWindowTotalTokens: number | null;
 } {
-  const goal = facts.timeline.goal ?? null;
+  const goal = timelineGoal(facts.timeline);
   const context = facts.timeline.contextWindowUsage ?? null;
   return {
     threadId: facts.row.id,
@@ -982,15 +996,7 @@ export function rootSummary(
     projectId: facts.row.projectId ?? null,
     createdAt: facts.row.createdAt,
     updatedAt: facts.row.updatedAt,
-    goal: goal
-      ? {
-          objective: goal.objective,
-          status: goal.status,
-          tokensUsed: goal.tokensUsed,
-          tokenBudget: goal.tokenBudget ?? null,
-          timeUsedSeconds: goal.timeUsedSeconds,
-        }
-      : null,
+    goal,
     contextWindowUsedTokens: context?.usedTokens ?? null,
     contextWindowTotalTokens: context?.modelContextWindow ?? null,
   };
