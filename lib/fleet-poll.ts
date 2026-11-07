@@ -1,28 +1,35 @@
-// Exactly one active-only loop, independent of job/parent count. Idle discovery
-// belongs to the existing global 20-second refresh and ordinary BB changes.
+// Exactly one active-only loop, independent of job/parent count, running only
+// while a client watches a board or the global page. Idle discovery belongs to
+// the global page's 20-second refresh and ordinary BB changes.
 export class FleetActivePoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private inflight = false;
   private disposed = false;
   private active = false;
-  private touchedAt = 0;
+  private watchers = 0;
   constructor(
     private deps: {
       poll: () => Promise<{ changed: boolean; active: boolean }>;
       changed: () => void;
-      now?: () => number;
     },
   ) {}
-  private now() {
-    return this.deps.now?.() ?? Date.now();
+  /** Allow polling until the watched read's signal aborts. */
+  watch(signal: AbortSignal) {
+    if (this.disposed || signal.aborted) return;
+    this.watchers += 1;
+    signal.addEventListener("abort", () => {
+      this.watchers = Math.max(0, this.watchers - 1);
+      if (this.watchers > 0) return;
+      this.active = false;
+      this.stop();
+    }, { once: true });
   }
   observe(active: boolean) {
-    if (this.disposed) return;
+    if (this.disposed || this.watchers === 0) return;
     // Preserve one scheduled tick to publish a terminal result another view
     // discovered before the poll. The tick consumes the shared cache and stops.
     if (!active && this.active && (this.timer || this.inflight)) return;
     this.active = active;
-    this.touchedAt = this.now();
     if (active) this.schedule();
     else this.stop();
   }
@@ -39,16 +46,11 @@ export class FleetActivePoller {
     this.timer.unref?.();
   }
   async tick() {
-    if (this.inflight || this.disposed || !this.active) return;
-    if (this.now() - this.touchedAt > 90000) {
-      this.active = false;
-      this.stop();
-      return;
-    }
+    if (this.inflight || this.disposed || !this.active || this.watchers === 0) return;
     this.inflight = true;
     try {
       const result = await this.deps.poll();
-      if (this.disposed) return;
+      if (this.disposed || this.watchers === 0) return;
       this.active = result.active;
       if (result.changed) this.deps.changed();
     } catch {

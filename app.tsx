@@ -8,7 +8,7 @@
 // surface-agnostic: it takes a rootThreadId, so a future entry surface
 // (header action, nav panel, message action) can mount it unchanged.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
-import type { PluginNavPanelProps, PluginThreadPanelProps } from "@get-bb/plugin-sdk";
+import type { ExperimentalThreadActionTabProps, PluginNavPanelProps } from "@get-bb/plugin-sdk";
 import { Board } from "@/components/board/board";
 import { GlobalDashboard } from "@/components/global/global-dashboard";
 import "./app.css";
@@ -18,7 +18,7 @@ import "./app.css";
  * persisted `params` (used when another surface opens this panel scoped to a
  * different root: {"rootThreadId": "thr_..."}).
  */
-function BoardPanel({ threadId, params }: PluginThreadPanelProps) {
+function BoardPanel({ threadId, params }: ExperimentalThreadActionTabProps) {
   const fromParams =
     params !== null &&
     typeof params === "object" &&
@@ -42,7 +42,9 @@ export default definePluginApp((app) => {
     path: "operations",
     component: GlobalDashboardPage,
   });
-  app.slots.threadPanelAction({
+  app.slots.experimental_tab({
+    context: { kind: "thread" },
+    availability: "action",
     id: "agent-board",
     title: "Agent Board",
     icon: "ListTodo",

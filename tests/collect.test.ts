@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createFakeSdk } from "@get-bb/plugin-sdk/testing";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { FakeSdkOverrides } from "@get-bb/plugin-sdk/testing";
-import { BoardCollector } from "@/lib/collect";
+import { BoardCollector, placeTree } from "@/lib/collect";
+import type { ThreadRowLike } from "@/lib/bb-source";
 
 /** Real sdk arg types (wire DTOs are not exported individually). */
 type ThreadsArea = BbPluginApi["sdk"]["threads"];
@@ -120,8 +121,54 @@ function twoThreadOverrides(): FakeSdkOverrides {
   } as unknown as FakeSdkOverrides;
 }
 
+type ThreadRowFixture = ReturnType<typeof thread>;
+
+/**
+ * Fixtures describe the tree as per-parent listings. Derive the recursive
+ * descendants read and the batched `threadIds` row read from that listing,
+ * so harness call counts show only what the collector requested.
+ */
+function withTreeReads(overrides: FakeSdkOverrides): FakeSdkOverrides {
+  const threads = (overrides as { threads?: Record<string, unknown> }).threads ?? {};
+  const listByParent = threads.list as ((args: ListArgsLike) => Promise<ThreadRowFixture[]>) | undefined;
+  if (!listByParent) return overrides;
+  const descendantsOf = async (threadId: string): Promise<ThreadRowFixture[]> => {
+    const found: ThreadRowFixture[] = [];
+    const seen = new Set([threadId]);
+    for (let index = -1; index < found.length; index += 1) {
+      const parentId = index < 0 ? threadId : found[index]!.id;
+      for (const child of await listByParent({ parentThreadId: parentId, includeHidden: true })) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        found.push(child);
+      }
+    }
+    return found;
+  };
+  let lastDescendants: ThreadRowFixture[] = [];
+  return {
+    ...overrides,
+    threads: {
+      ...threads,
+      experimental_listDescendants: async ({ threadIds }: { threadIds: readonly string[] }) => ({
+        threads: await Promise.all(
+          threadIds.map(async (threadId) => {
+            lastDescendants = await descendantsOf(threadId);
+            return { threadId, descendantIds: lastDescendants.map((row) => row.id) };
+          }),
+        ),
+      }),
+      list: async (args: ListArgsLike) => {
+        if (args.threadIds === undefined) return listByParent(args);
+        const wanted = new Set(args.threadIds);
+        return lastDescendants.filter((row) => wanted.has(row.id));
+      },
+    },
+  } as unknown as FakeSdkOverrides;
+}
+
 function makeCollector(overrides: FakeSdkOverrides) {
-  const { sdk, harness } = createFakeSdk({ pluginId: "agent-board", overrides });
+  const { sdk, harness } = createFakeSdk({ pluginId: "agent-board", overrides: withTreeReads(overrides) });
   const bb = { sdk } as unknown as BbPluginApi;
   return { collector: new BoardCollector(bb, clock), harness };
 }
@@ -203,10 +250,11 @@ describe("bounded fetching and caching", () => {
 
     const snap = await collector.snapshot("thr_root", { fresh: true });
     expect(snap.root.threadId).toBe("thr_root");
-    // Underlying 1s/2s caches still hold: children/timelines/models are not
+    // Underlying 1s/2s caches still hold: tree/timelines/models are not
     // refetched. Only the uncached threads.get runs again.
     expect(harness.calls.length).toBe(afterFirst + 2); // threads.get + explicit fresh Fleet snapshot
-    expect(harness.callsTo("threads.list").length).toBe(2);
+    expect(harness.callsTo("threads.experimental_listDescendants").length).toBe(1);
+    expect(harness.callsTo("threads.list").length).toBe(1);
     expect(harness.callsTo("threads.timeline").length).toBe(2);
     expect(harness.callsTo("threads.defaultExecutionOptions").length).toBe(2);
   });
@@ -231,7 +279,8 @@ describe("bounded fetching and caching", () => {
     const [a, b] = await Promise.all([first, second]);
     expect(a).toEqual(b);
     expect(harness.callsTo("threads.get").length).toBe(1);
-    expect(harness.callsTo("threads.list").length).toBe(2); // root + child, once each
+    expect(harness.callsTo("threads.experimental_listDescendants").length).toBe(1);
+    expect(harness.callsTo("threads.list").length).toBe(1); // one batched row read for the tree
   });
 
   it("invalidate() forces a full refetch including models", async () => {
@@ -679,7 +728,8 @@ describe("terminal-state cache correctness (generation guards)", () => {
     const [a, b] = await Promise.all([first, second]);
     expect(a).toEqual(b); // one collect served both callers
     expect(harness.callsTo("threads.get").length).toBe(1);
-    expect(harness.callsTo("threads.list").length).toBe(2); // root + child, once each
+    expect(harness.callsTo("threads.experimental_listDescendants").length).toBe(1);
+    expect(harness.callsTo("threads.list").length).toBe(1); // one batched row read for the tree
   });
 
   it("does not serve a pre-invalidation in-flight global dashboard after invalidateGlobal()", async () => {
@@ -752,5 +802,52 @@ describe("terminal-state cache correctness (generation guards)", () => {
     const scopedAgain = await collector.snapshot("thr_root");
     expect(scopedAgain.root.title).toBe("Root work");
     expect(scopedAgain.cards.find((card) => card.threadId === "thr_child")).toBeDefined();
+  });
+});
+
+describe("tree placement", () => {
+  const row = (id: string, parentThreadId: string | null) =>
+    thread(id, { parentThreadId }) as unknown as ThreadRowLike;
+
+  it("keeps a tree of exactly the thread cap whole and not partial", () => {
+    const root = row("thr_root", null);
+    const rows = Array.from({ length: 23 }, (_, index) => row(`thr_${index}`, "thr_root"));
+    const placed = placeTree(root, rows, false);
+    expect(placed.rows).toHaveLength(24);
+    expect(placed.partial).toBe(false);
+  });
+
+  it("flags partial when one more reachable thread does not fit", () => {
+    const root = row("thr_root", null);
+    const rows = Array.from({ length: 24 }, (_, index) => row(`thr_${index}`, "thr_root"));
+    const placed = placeTree(root, rows, false);
+    expect(placed.rows).toHaveLength(24);
+    expect(placed.partial).toBe(true);
+  });
+
+  it("keeps the row order for siblings and depth from parent links", () => {
+    const root = row("thr_root", null);
+    const placed = placeTree(
+      root,
+      [row("thr_b", "thr_root"), row("thr_b1", "thr_b"), row("thr_a", "thr_root")],
+      false,
+    );
+    expect(placed.rows.map((placedRow) => placedRow.id)).toEqual(["thr_root", "thr_b", "thr_a", "thr_b1"]);
+    expect(placed.childIds.get("thr_root")).toEqual(["thr_b", "thr_a"]);
+    expect(placed.depths.get("thr_b1")).toBe(2);
+  });
+
+  it("leaves out threads whose parent is not in the tree (below an archived thread)", () => {
+    const root = row("thr_root", null);
+    const placed = placeTree(root, [row("thr_child", "thr_root"), row("thr_orphan", "thr_archived")], false);
+    expect(placed.rows.map((placedRow) => placedRow.id)).toEqual(["thr_root", "thr_child"]);
+    expect(placed.partial).toBe(false);
+  });
+
+  it("flags partial for threads below the depth cap", () => {
+    const chain = [row("thr_1", "thr_root"), row("thr_2", "thr_1"), row("thr_3", "thr_2"), row("thr_4", "thr_3"), row("thr_5", "thr_4")];
+    const placed = placeTree(row("thr_root", null), chain, false);
+    expect(placed.rows.map((placedRow) => placedRow.id)).toEqual(["thr_root", "thr_1", "thr_2", "thr_3", "thr_4"]);
+    expect(placed.partial).toBe(true);
   });
 });

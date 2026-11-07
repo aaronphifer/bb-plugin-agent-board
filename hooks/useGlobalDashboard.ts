@@ -1,16 +1,15 @@
-// Global dashboard data hook. Core thread events drive immediate refreshes;
-// one slow bounded discovery check catches unrelated optional-plugin work.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
+// Global dashboard data hook. The page reads global_dashboard through BB's
+// shared RPC query cache; the backend invalidates its tag on BB changes and,
+// while the page is watched, every 20 seconds to discover new optional-plugin
+// work. The host refetches on invalidation and after reconnects.
+import { useCallback, useEffect, useState } from "react";
+import { experimental_useRpcQuery, useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import {
   BOARD_CHANGED_CHANNEL,
   boardChangedPayloadSchema,
+  rpcContract,
   type AttentionItem,
-  type GlobalDashboardSnapshot,
-  type rpcContract,
 } from "@/contract/rpc";
-
-export const GLOBAL_DISCOVERY_INTERVAL_MS = 20_000;
 
 export function isForGlobalDashboard(payload: unknown): boolean {
   const parsed = boardChangedPayloadSchema.safeParse(payload);
@@ -20,80 +19,44 @@ export function isForGlobalDashboard(payload: unknown): boolean {
 
 export function useGlobalDashboard() {
   const rpc = useRpc<typeof rpcContract>();
-  const [snapshot, setSnapshot] = useState<GlobalDashboardSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const query = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "global_dashboard",
+    input: {},
+  });
+  const snapshot = query.data ?? null;
+  const [freshPending, setFreshPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [lastSignalAt, setLastSignalAt] = useState<number | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
-  const snapshotRef = useRef<GlobalDashboardSnapshot | null>(null);
-  const inflight = useRef(false);
-  /**
-   * A refetch signal arrived while a fetch was in flight. The signal is not
-   * dropped (the old bug: a terminal-state signal lost this way never
-   * returned, leaving the dashboard showing RUNNING forever) — instead one
-   * trailing refetch runs when the in-flight request settles. Bounded: the
-   * flag collapses any signal burst into a single retry, and the retry only
-   * runs when a signal actually arrived, so it can never loop or storm.
-   */
-  const pendingSignal = useRef(false);
-  const requestId = useRef(0);
-
-  const refetch = useCallback((options?: { fresh?: boolean }) => {
-    if (inflight.current) {
-      pendingSignal.current = true;
-      return;
-    }
-    inflight.current = true;
-    const id = ++requestId.current;
-    if (snapshotRef.current === null) setLoading(true);
-    else setRefreshing(true);
-    rpc.call("global_dashboard", { fresh: options?.fresh === true }).then(
-      (result) => {
-        if (id !== requestId.current) return;
-        snapshotRef.current = result;
-        setSnapshot(result);
-        setLastRefreshAt(Date.now());
-        setError(null);
-      },
-      (cause: unknown) => {
-        if (id !== requestId.current) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      },
-    ).finally(() => {
-      if (id !== requestId.current) return;
-      inflight.current = false;
-      setLoading(false);
-      setRefreshing(false);
-      if (pendingSignal.current) {
-        pendingSignal.current = false;
-        refetch(options);
-      }
-    });
-  }, [rpc]);
+  const refetchQuery = query.refetch;
+  const fetchedAt = snapshot?.fetchedAt;
 
   useEffect(() => {
-    refetch();
-    return () => {
-      requestId.current += 1;
-      inflight.current = false;
-    };
-  }, [refetch]);
+    if (fetchedAt === undefined) return;
+    setLastRefreshAt(Date.now());
+    setActionError(null);
+  }, [fetchedAt]);
+
+  const refetch = useCallback((options?: { fresh?: boolean }) => {
+    if (options?.fresh !== true) {
+      void refetchQuery();
+      return;
+    }
+    setFreshPending(true);
+    void rpc
+      .call("global_dashboard", { fresh: true })
+      .catch(() => undefined)
+      .then(() => refetchQuery())
+      .finally(() => setFreshPending(false));
+  }, [rpc, refetchQuery]);
 
   useRealtime(BOARD_CHANGED_CHANNEL, (payload) => {
-    if (isForGlobalDashboard(payload)) { setLastSignalAt(Date.now()); refetch(); }
+    if (isForGlobalDashboard(payload)) setLastSignalAt(Date.now());
   });
 
   const connectionState = useRealtimeConnectionState();
-  const everConnected = useRef(false);
-  const previousConnection = useRef(connectionState);
-  useEffect(() => {
-    const was = previousConnection.current;
-    previousConnection.current = connectionState;
-    if (connectionState === "connected" && was !== "connected" && everConnected.current) refetch();
-    if (connectionState === "connected") everConnected.current = true;
-  }, [connectionState, refetch]);
 
   /** Presentation-only: hide one attention item (persists via plugin storage). */
   const dismissAttention = useCallback(
@@ -105,12 +68,10 @@ export function useGlobalDashboard() {
           updatedAt: item.updatedAt,
         });
       } catch (cause: unknown) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-        return;
+        setActionError(cause instanceof Error ? cause.message : String(cause));
       }
-      refetch();
     },
-    [rpc, refetch],
+    [rpc],
   );
 
   /** Presentation-only: forget every stored attention dismissal. */
@@ -118,19 +79,9 @@ export function useGlobalDashboard() {
     try {
       await rpc.call("clear_dismissed_attentions", {});
     } catch (cause: unknown) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      return;
+      setActionError(cause instanceof Error ? cause.message : String(cause));
     }
-    refetch();
-  }, [rpc, refetch]);
-
-  // BB lifecycle events are immediate. This slow mounted-page check exists
-  // only to discover a new Redteam run, whose realtime channel cannot be
-  // subscribed to cross-plugin on runtime SDK 0.4.21.
-  useEffect(() => {
-    const timer = setInterval(() => refetch(), GLOBAL_DISCOVERY_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [refetch]);
+  }, [rpc]);
 
   useEffect(() => {
     const timer = setInterval(() => setTick((value) => value + 1), 1_000);
@@ -139,9 +90,9 @@ export function useGlobalDashboard() {
 
   return {
     snapshot,
-    loading,
-    refreshing,
-    error,
+    loading: query.isLoading,
+    refreshing: freshPending || (query.isFetching && snapshot !== null),
+    error: actionError ?? query.error?.message ?? null,
     tick,
     refetch,
     dismissAttention,

@@ -52,6 +52,15 @@ async function makeHost(overrides: FakeSdkOverrides = {}) {
         });
       },
       list: async () => [],
+      experimental_listDescendants: async (args: { threadIds: readonly string[] }) => ({
+        threads: args.threadIds.map((threadId) => ({ threadId, descendantIds: [] })),
+      }),
+      experimental_listAncestors: async (args: { threadIds: readonly string[] }) => ({
+        threads: args.threadIds.map((threadId) => ({
+          threadId,
+          ancestorIds: threadId === "thr_grandchild" ? ["thr_unseen_child", "thr_root"] : [],
+        })),
+      }),
       timeline: async () => ({
         rows: [],
         activeWorkflows: [],
@@ -97,6 +106,21 @@ async function makeHost(overrides: FakeSdkOverrides = {}) {
 }
 
 const settle = (ms = 550) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Open a board as the app does: read it and hold its watched read. */
+async function openBoard(host: FakePluginHost, threadId: string): Promise<() => void> {
+  await host.harness.behavior.callRpc("board_snapshot", { threadId });
+  const close = host.harness.behavior.experimental_watchRpc("board_snapshot", { input: { threadId } });
+  await settle(20);
+  return close;
+}
+
+async function openGlobalPage(host: FakePluginHost): Promise<() => void> {
+  await host.harness.behavior.callRpc("global_dashboard", {});
+  const close = host.harness.behavior.experimental_watchRpc("global_dashboard", { input: {} });
+  await settle(20);
+  return close;
+}
 
 describe("rpc registration", () => {
   it("serves a schema-validated board_snapshot", async () => {
@@ -172,7 +196,7 @@ describe("rpc registration", () => {
 describe("watcher wiring", () => {
   it("publishes an invalidation signal when an observed thread changes", async () => {
     const { host, changed } = await makeHost();
-    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+    await openBoard(host, "thr_root");
     expect(host.harness.inspection.realtimeSignals).toEqual([]);
 
     changed({
@@ -187,11 +211,68 @@ describe("watcher wiring", () => {
     expect(signals).toHaveLength(1);
     expect(signals[0]!.channel).toBe(BOARD_CHANGED_CHANNEL);
     expect(signals[0]!.payload).toEqual({ roots: ["thr_root"] });
+    expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([["board:thr_root"]]);
+  });
+
+  it("invalidates the root board for a thread created below a parent the board has not seen", async () => {
+    const { host } = await makeHost();
+    await openBoard(host, "thr_root");
+
+    await host.harness.behavior.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({ id: "thr_grandchild", parentThreadId: "thr_unseen_child" }),
+    });
+    await settle();
+
+    expect(host.harness.inspection.sdk.callsTo("threads.experimental_listAncestors")).toHaveLength(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.get")).toHaveLength(1); // the board read only
+    expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([["board:thr_root"]]);
+  });
+
+  it("resolves several unseen threads with one batched ancestor read", async () => {
+    const { host } = await makeHost();
+    await openBoard(host, "thr_root");
+
+    await Promise.all([
+      host.harness.behavior.emitThreadEvent("thread.created", {
+        thread: makeThreadResponse({ id: "thr_grandchild", parentThreadId: "thr_unseen_child" }),
+      }),
+      host.harness.behavior.emitThreadEvent("thread.created", {
+        thread: makeThreadResponse({ id: "thr_stranger", parentThreadId: "thr_elsewhere" }),
+      }),
+    ]);
+    await settle();
+
+    const lookups = host.harness.inspection.sdk.callsTo("threads.experimental_listAncestors");
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0]).toEqual([{ threadIds: ["thr_grandchild", "thr_stranger"] }]);
+    expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([["board:thr_root"]]);
+  });
+
+  it("stops invalidating a board once its last watched read ends", async () => {
+    const { host, changed } = await makeHost();
+    const close = await openBoard(host, "thr_root");
+    close();
+
+    changed({ entity: "thread", type: "changed", id: "thr_root", changes: ["status-changed"] });
+    await settle();
+
+    expect(host.harness.inspection.realtimeSignals).toEqual([]);
+    expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([]);
+  });
+
+  it("does not watch a board that was only read, never watched", async () => {
+    const { host, changed } = await makeHost();
+    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+
+    changed({ entity: "thread", type: "changed", id: "thr_root", changes: ["status-changed"] });
+    await settle();
+
+    expect(host.harness.inspection.realtimeSignals).toEqual([]);
   });
 
   it("coalesces chatty changes into one signal per debounce window", async () => {
     const { host, changed } = await makeHost();
-    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+    await openBoard(host, "thr_root");
 
     changed({
       entity: "thread",
@@ -212,7 +293,7 @@ describe("watcher wiring", () => {
 
   it("stays quiet for cosmetic and reasoning-only changes", async () => {
     const { host, changed } = await makeHost();
-    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+    await openBoard(host, "thr_root");
 
     changed({
       entity: "thread",
@@ -234,7 +315,7 @@ describe("watcher wiring", () => {
 
   it("reacts to lifecycle events for observed threads", async () => {
     const { host } = await makeHost();
-    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+    await openBoard(host, "thr_root");
 
     await host.harness.behavior.emitThreadEvent("thread.idle", {
       thread: makeThreadResponse({ id: "thr_root", status: "idle" }),
@@ -249,13 +330,29 @@ describe("watcher wiring", () => {
 
   it("publishes a global invalidation after the global page is observed", async () => {
     const { host, changed } = await makeHost();
-    await host.harness.behavior.callRpc("global_dashboard", {});
+    await openGlobalPage(host);
     changed({ entity: "thread", type: "changed", id: "thr_unrelated", changes: ["status-changed"] });
     await settle();
     expect(host.harness.inspection.realtimeSignals).toContainEqual({
       channel: BOARD_CHANGED_CHANNEL,
       payload: { roots: [], global: true },
     });
+    expect(host.harness.inspection.experimental_rpcInvalidations).toContainEqual(["global-dashboard"]);
+  });
+
+  it("refreshes the watched global page every 20 seconds for optional-source discovery, and stops when it closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host } = await makeHost();
+      const close = host.harness.behavior.experimental_watchRpc("global_dashboard", { input: {} });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([["global-dashboard"]]);
+      close();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(host.harness.inspection.experimental_rpcInvalidations).toEqual([["global-dashboard"]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -301,7 +398,7 @@ describe("cli", () => {
 describe("dispose", () => {
   it("stops the watcher and unsubscribes on plugin dispose", async () => {
     const { host, changed } = await makeHost();
-    await host.harness.behavior.callRpc("board_snapshot", { threadId: "thr_root" });
+    await openBoard(host, "thr_root");
 
     await host.harness.lifecycle.dispose();
     changed({
@@ -392,6 +489,7 @@ describe("attention dismissal RPCs", () => {
       updatedAt: item.updatedAt,
     })) as { dismissed: number };
     expect(dismissed.dismissed).toBe(1);
+    expect(host.harness.inspection.experimental_rpcInvalidations).toContainEqual(["global-dashboard"]);
 
     const second = (await host.harness.behavior.callRpc("global_dashboard", {
       fresh: true,

@@ -1,22 +1,19 @@
 // bb-plugin-agent-board — the board data hook.
 //
-// One bounded fetch per invalidation signal: the backend publishes
-// "agent-board-changed" and this hook refetches board_snapshot. No polling.
-// A 1s local ticker drives live elapsed timers between snapshots.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
-import {
-  BOARD_CHANGED_CHANNEL,
-  boardChangedPayloadSchema,
-  type BoardSnapshot,
-  type rpcContract,
-} from "@/contract/rpc";
+// The board reads board_snapshot through BB's shared RPC query cache. The
+// backend invalidates the board's tag when a watched thread changes, and the
+// host refetches on invalidation and after reconnects. No polling. Holding
+// the read is also what keeps the backend's watcher and pollers running for
+// this root. A 1s local ticker drives live elapsed timers between snapshots.
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { experimental_useRpcQuery, useRpc } from "@get-bb/plugin-sdk/app";
+import { rpcContract, type BoardSnapshot } from "@/contract/rpc";
 
 interface BoardState {
   snapshot: BoardSnapshot | null;
-  /** Set after the first fetch for a threadId resolves or rejects. */
+  /** True until the first fetch for a threadId resolves or rejects. */
   loading: boolean;
-  /** Fetch in flight after the first (manual refresh / signal refetch). */
+  /** Fetch in flight after the first (manual refresh / invalidation refetch). */
   refreshing: boolean;
   error: string | null;
   /** Advances every second while any card is still live (running/waiting). */
@@ -24,99 +21,35 @@ interface BoardState {
   refetch: (options?: { fresh?: boolean }) => void;
 }
 
-/**
- * Parse a realtime payload defensively: only the `roots` array is trusted,
- * and anything malformed means "refetch" (the safe default).
- */
-export function isForThisBoard(payload: unknown, rootThreadId: string): boolean {
-  const parsed = boardChangedPayloadSchema.safeParse(payload);
-  if (!parsed.success) return true; // unreadable signal: assume relevant
-  const roots = parsed.data.roots;
-  if (roots.length === 0) return parsed.data.global !== true;
-  return roots.includes(rootThreadId);
-}
-
 export function useBoard(rootThreadId: string): BoardState {
   const rpc = useRpc<typeof rpcContract>();
-  const [snapshot, setSnapshot] = useState<BoardSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const query = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "board_snapshot",
+    input: { threadId: rootThreadId },
+  });
+  const snapshot = query.data ?? null;
+  const [freshPending, setFreshPending] = useState(false);
   const [tick, setTick] = useState(0);
-  const requestId = useRef(0);
+  const refetchQuery = query.refetch;
 
+  // `fresh` bypasses the backend's short-lived caches; the follow-up read
+  // then serves that fresh snapshot to every view of this board.
   const refetch = useCallback(
     (options?: { fresh?: boolean }) => {
-      const id = ++requestId.current;
-      if (snapshot === null) setLoading(true);
-      else setRefreshing(true);
-      rpc
-        .call("board_snapshot", {
-          threadId: rootThreadId,
-          fresh: options?.fresh === true,
-        })
-        .then(
-          (result) => {
-            if (id !== requestId.current) return; // a newer fetch superseded this one
-            setSnapshot(result);
-            setError(null);
-          },
-          (cause: unknown) => {
-            if (id !== requestId.current) return;
-            setError(cause instanceof Error ? cause.message : String(cause));
-          },
-        )
-        .finally(() => {
-          if (id !== requestId.current) return;
-          setLoading(false);
-          setRefreshing(false);
-        });
+      if (options?.fresh !== true) {
+        void refetchQuery();
+        return;
+      }
+      setFreshPending(true);
+      void rpc
+        .call("board_snapshot", { threadId: rootThreadId, fresh: true })
+        .catch(() => undefined)
+        .then(() => refetchQuery())
+        .finally(() => setFreshPending(false));
     },
-    [rpc, rootThreadId, snapshot],
+    [rpc, rootThreadId, refetchQuery],
   );
-
-  // Initial fetch when the board opens (and on thread change).
-  useEffect(() => {
-    requestId.current++;
-    setSnapshot(null);
-    setError(null);
-    setLoading(true);
-    rpc
-      .call("board_snapshot", { threadId: rootThreadId })
-      .then(
-        (result) => {
-          setSnapshot(result);
-          setError(null);
-        },
-        (cause: unknown) => {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        },
-      )
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [rpc, rootThreadId]);
-
-  // Backend invalidation → refetch (bounded: debounced server-side, cached
-  // server-side, race-guarded here).
-  useRealtime(BOARD_CHANGED_CHANNEL, (payload) => {
-    if (isForThisBoard(payload, rootThreadId)) refetch();
-  });
-
-  // After a realtime reconnect, reconcile: signals emitted while offline
-  // were missed, so refetch once (but not on the first connect — the mount
-  // effect already fetched).
-  const connectionState = useRealtimeConnectionState();
-  const everConnected = useRef(false);
-  const prevState = useRef(connectionState);
-  useEffect(() => {
-    const was = prevState.current;
-    prevState.current = connectionState;
-    if (connectionState === "connected" && was !== "connected" && everConnected.current) {
-      refetch();
-    }
-    if (connectionState === "connected") everConnected.current = true;
-  }, [connectionState, refetch]);
 
   // Local timer: only while work is live, so idle boards cost nothing.
   const hasLive = useMemo(
@@ -133,5 +66,12 @@ export function useBoard(rootThreadId: string): BoardState {
     return () => clearInterval(timer);
   }, [hasLive]);
 
-  return { snapshot, loading, refreshing, error, tick, refetch };
+  return {
+    snapshot,
+    loading: query.isLoading,
+    refreshing: freshPending || (query.isFetching && snapshot !== null),
+    error: query.error?.message ?? null,
+    tick,
+    refetch,
+  };
 }

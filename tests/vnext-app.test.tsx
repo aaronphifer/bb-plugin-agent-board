@@ -38,7 +38,7 @@ describe("Phase 1 dashboard interactions", () => {
     let result = phaseSnapshot(); const slot = mount({ rpc: { global_dashboard: () => result } });
     await slot.findByText("Task A"); expect(slot.container.querySelector("[data-empty-attention]")?.className).not.toContain("py-4");
     result = phaseSnapshot({ attention: [{ id: "a", executionKey: "a", type: "action-required", status: "open", title: "Approval", message: "Approve tool", firstObservedAt: 10, updatedAt: 20, threadId: "thread", source: "bb" }] });
-    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true }); await slot.findByText("Approve tool"); expect(slot.container.querySelector("[data-empty-attention]")).toBeNull(); slot.unmount();
+    await slot.behavior.experimental_invalidateRpc(["global-dashboard"]); await slot.findByText("Approve tool"); expect(slot.container.querySelector("[data-empty-attention]")).toBeNull(); slot.unmount();
   });
   it("shows watcher errors independently of transport and recovers on reconnect", async () => {
     const fetch = vi.fn(() => phaseSnapshot({ monitoring: { status: "degraded", startedAt: 1, lastEventAt: 2, lastPublishedAt: null, lastErrorAt: 3 } }));

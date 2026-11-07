@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, it, expect } from "vitest";
+import { boardTabComponent } from "./board-tab";
 import {
   loadPluginApp,
   renderSlot,
@@ -20,7 +21,7 @@ afterEach(() => {
 function board(jobs = [job()]) {
   const snapshot = scoped([parent(), ...jobs.map(fleetCard)]);
   const s = renderSlot(
-    { component: app.threadPanelActions[0].component },
+    { component: boardTabComponent(app) },
     { threadId: "parent", params: null } as never,
     { rpc: { board_snapshot: () => snapshot } },
   );

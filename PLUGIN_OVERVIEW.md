@@ -17,7 +17,7 @@ reopen its notes from the dashboard whenever needed.
 
 ## Requirements
 
-Requires BB 0.40 or newer; BB 0.46.0 is recommended. Ollama Fleet 0.6.0 or newer and Redteam's public observability RPC
+Requires BB 0.47 or newer. Ollama Fleet 0.6.0 or newer and Redteam's public observability RPC
 are optional integrations. Missing integrations leave native BB observation
 available. Mobile layouts and reduced-motion preferences are supported.
 Hidden reasoning is excluded. System/push notifications are unavailable in

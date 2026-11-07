@@ -137,19 +137,17 @@ export interface WatchedRoot {
   threads: Set<string>;
   /** Project filter for parentage lookups of unseen threads. */
   projectId: string | null;
-  /** Last time a snapshot was requested for this root. */
-  lastTouchedAt: number;
+  /** Open board clients currently watching this root. */
+  watchers: number;
 }
 
 export interface WatcherDeps {
   /** Publishes the invalidation signal. */
   publish: (payload: { roots: string[]; global?: boolean }) => void;
-  /** Resolves a thread's parentThreadId (bounded parentage check). */
-  getParent: (threadId: string) => Promise<string | null>;
+  /** Resolves a thread's ancestor ids, parent first (bounded parentage check). */
+  getAncestors: (threadId: string) => Promise<readonly string[]>;
   /** Clock, injectable for tests. Defaults to Date.now. */
   now?: () => number;
-  /** How long a watched root stays live without a snapshot request. */
-  watchedTtlMs?: number;
   /** Debounce window for coalescing signals. */
   debounceMs?: number;
   /** Min gap between parentage lookups for the same unseen thread. */
@@ -174,7 +172,7 @@ export class BoardWatcher {
   private readonly watched = new Map<string, WatchedRoot>();
   private readonly dirty = new Set<string>();
   private dirtyGlobal = false;
-  private globalTouchedAt: number | null = null;
+  private globalWatchers = 0;
   private readonly lookupAt = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Pending terminal reconciliation: at most one, replaced by newer terminal flushes. */
@@ -188,13 +186,11 @@ export class BoardWatcher {
   private lastEventAt: number | null = null;
   private lastPublishedAt: number | null = null;
   private lastErrorAt: number | null = null;
-  private readonly watchedTtlMs: number;
   private readonly debounceMs: number;
   private readonly lookupGapMs: number;
   private readonly reconcileDelayMs: number;
 
   constructor(private readonly deps: WatcherDeps) {
-    this.watchedTtlMs = deps.watchedTtlMs ?? 90_000;
     this.debounceMs = deps.debounceMs ?? 400;
     this.lookupGapMs = deps.lookupGapMs ?? 2_000;
     this.reconcileDelayMs = deps.reconcileDelayMs ?? 1_500;
@@ -216,42 +212,59 @@ export class BoardWatcher {
     catch { this.recordError(); return false; }
   }
 
-  /** Called by the RPC handler whenever a board is fetched for a root. */
-  touch(rootThreadId: string, threads: string[], projectId: string | null): void {
-    if (this.disposed) return;
-    const now = this.clock();
+  /**
+   * Watch a root while an open board reads it; the read's watched signal
+   * ends the watch when its last client leaves.
+   */
+  watch(rootThreadId: string, signal: AbortSignal): void {
+    if (this.disposed || signal.aborted) return;
     const existing = this.watched.get(rootThreadId);
-    if (existing) {
-      existing.threads = new Set(threads);
-      existing.projectId = projectId;
-      existing.lastTouchedAt = now;
-    } else {
+    if (existing) existing.watchers += 1;
+    else {
       this.watched.set(rootThreadId, {
         rootThreadId,
-        threads: new Set(threads),
-        projectId,
-        lastTouchedAt: now,
+        threads: new Set([rootThreadId]),
+        projectId: null,
+        watchers: 1,
       });
     }
-    this.prune(now);
+    signal.addEventListener("abort", () => {
+      const root = this.watched.get(rootThreadId);
+      if (!root) return;
+      root.watchers -= 1;
+      if (root.watchers <= 0) this.watched.delete(rootThreadId);
+    }, { once: true });
   }
 
-  /** Lease the global dashboard as watched; refreshed by its bounded RPC. */
-  touchGlobal(): void {
+  /** Watch the global dashboard while an open page reads it. */
+  watchGlobal(signal: AbortSignal): void {
+    if (this.disposed || signal.aborted) return;
+    this.globalWatchers += 1;
+    signal.addEventListener("abort", () => {
+      this.globalWatchers = Math.max(0, this.globalWatchers - 1);
+    }, { once: true });
+  }
+
+  /** Called by the RPC handler with the threads a watched root's snapshot observed. */
+  touch(rootThreadId: string, threads: string[], projectId: string | null): void {
     if (this.disposed) return;
-    this.globalTouchedAt = this.clock();
-    this.prune(this.globalTouchedAt);
+    const root = this.watched.get(rootThreadId);
+    if (!root) return;
+    root.threads = new Set(threads);
+    root.projectId = projectId;
   }
 
-  private prune(now: number): void {
-    for (const [id, root] of this.watched) {
-      if (now - root.lastTouchedAt > this.watchedTtlMs) this.watched.delete(id);
-    }
+  isWatching(rootThreadId: string): boolean {
+    return this.watched.has(rootThreadId);
+  }
+
+  isWatchingGlobal(): boolean {
+    return this.globalWatchers > 0;
+  }
+
+  private pruneLookups(now: number): void {
     for (const [id, at] of this.lookupAt) {
-      if (now - at > this.watchedTtlMs) this.lookupAt.delete(id);
-    }
-    if (this.globalTouchedAt !== null && now - this.globalTouchedAt > this.watchedTtlMs) {
-      this.globalTouchedAt = null;
+      if (now - at >= this.lookupGapMs) this.lookupAt.delete(id);
     }
   }
 
@@ -291,19 +304,7 @@ export class BoardWatcher {
       for (const root of this.watched.values()) this.markDirty(root.rootThreadId);
       return;
     }
-    const projectId = event.metadata?.projectId ?? null;
-    for (const root of this.candidatesFor(event.id, projectId)) {
-      if (root.threads.has(event.id) || event.id === root.rootThreadId) {
-        this.markDirty(root.rootThreadId);
-        continue;
-      }
-      if (this.lookupRecently(event.id)) continue;
-      const parent = await this.deps.getParent(event.id);
-      if (parent !== null && (root.threads.has(parent) || parent === root.rootThreadId)) {
-        root.threads.add(event.id); // a new descendant appeared
-        this.markDirty(root.rootThreadId);
-      }
-    }
+    await this.markAffectedRoots(event.id, event.metadata?.projectId ?? null, undefined);
   }
 
   /** Handle a plugin thread lifecycle event (thread.created/failed/idle/…). */
@@ -319,31 +320,46 @@ export class BoardWatcher {
     this.lastEventAt = this.clock();
     if (isTerminalLifecycleKind(kind)) this.dirtyTerminal = true;
     this.markGlobalDirty();
-    for (const root of this.candidatesFor(thread.id, thread.projectId ?? null)) {
-      if (root.threads.has(thread.id) || thread.id === root.rootThreadId) {
+    await this.markAffectedRoots(thread.id, thread.projectId ?? null, thread.parentThreadId);
+  }
+
+  /**
+   * Mark every watched root containing `threadId`. Known threads and children
+   * of known threads match directly; any other candidate needs one ancestor
+   * lookup, so a thread created below an unseen parent still reaches its
+   * root. A known null parent means a root thread, which needs no lookup.
+   */
+  private async markAffectedRoots(
+    threadId: string,
+    projectId: string | null,
+    parentThreadId: string | null | undefined,
+  ): Promise<void> {
+    const unresolved: WatchedRoot[] = [];
+    for (const root of this.candidatesFor(threadId, projectId)) {
+      if (root.threads.has(threadId) || threadId === root.rootThreadId) {
         this.markDirty(root.rootThreadId);
-        continue;
+      } else if (parentThreadId != null && (root.threads.has(parentThreadId) || parentThreadId === root.rootThreadId)) {
+        root.threads.add(threadId);
+        this.markDirty(root.rootThreadId);
+      } else if (parentThreadId !== null) {
+        unresolved.push(root);
       }
-      const parent = thread.parentThreadId ?? null;
-      if (parent !== null) {
-        if (root.threads.has(parent) || parent === root.rootThreadId) {
-          root.threads.add(thread.id);
-          this.markDirty(root.rootThreadId);
-        }
-        continue;
-      }
-      if (this.lookupRecently(thread.id)) continue;
-      const resolved = await this.deps.getParent(thread.id);
-      if (resolved !== null && (root.threads.has(resolved) || resolved === root.rootThreadId)) {
-        root.threads.add(thread.id);
+    }
+    if (unresolved.length === 0 || this.lookupRecently(threadId)) return;
+    const ancestors = await this.deps.getAncestors(threadId);
+    if (this.disposed) return;
+    for (const root of unresolved) {
+      if (ancestors.some((id) => id === root.rootThreadId || root.threads.has(id))) {
+        root.threads.add(threadId);
         this.markDirty(root.rootThreadId);
       }
     }
   }
 
   private lookupRecently(threadId: string): boolean {
-    const at = this.lookupAt.get(threadId);
     const now = this.clock();
+    this.pruneLookups(now);
+    const at = this.lookupAt.get(threadId);
     if (at !== undefined && now - at < this.lookupGapMs) return true;
     this.lookupAt.set(threadId, now);
     return false;
@@ -355,9 +371,7 @@ export class BoardWatcher {
   }
 
   private markGlobalDirty(): void {
-    const now = this.clock();
-    this.prune(now);
-    if (this.globalTouchedAt === null) return;
+    if (this.globalWatchers === 0) return;
     this.dirtyGlobal = true;
     this.ensureTimer();
   }
@@ -376,7 +390,6 @@ export class BoardWatcher {
   /** Optional-source invalidation for every currently watched root in a project. */
   invalidateProject(projectId: string): void {
     if (this.disposed) return;
-    const now = this.clock(); this.prune(now);
     for (const root of this.watched.values()) if (root.projectId === projectId) this.markDirty(root.rootThreadId);
     this.markGlobalDirty();
   }
@@ -437,7 +450,7 @@ export class BoardWatcher {
     this.dirty.clear();
     this.dirtyGlobal = false;
     this.dirtyTerminal = false;
-    this.globalTouchedAt = null;
+    this.globalWatchers = 0;
   }
 
   /** Realtime channel the frontend listens on. */

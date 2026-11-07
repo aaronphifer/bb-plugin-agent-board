@@ -23,7 +23,6 @@ import {
   type ThreadEventRow,
   type ThreadFacts,
   type ThreadGetResult,
-  type ThreadListRow,
   type ThreadRowLike,
   type TimelineResponse,
 } from "./bb-source";
@@ -61,7 +60,7 @@ export interface BoardSnapshot {
 }
 
 const TTL = {
-  children: 1_000,
+  tree: 1_000,
   timeline: 2_000,
   events: 2_000,
   output: 3_000,
@@ -83,7 +82,7 @@ export const PROJECT_METADATA_TIMEOUT_MS = 750;
 export class BoardCollector {
   private readonly sdk: Sdk;
   private readonly now: () => number;
-  private readonly childrenCache = new Map<string, CacheEntry<ThreadListRow[]>>();
+  private readonly treeCache = new Map<string, CacheEntry<{ rows: ThreadRowLike[]; truncated: boolean }>>();
   private readonly timelineCache = new Map<string, CacheEntry<TimelineResponse>>();
   private readonly eventsCache = new Map<string, CacheEntry<ThreadEventRow[]>>();
   private readonly outputCache = new Map<string, CacheEntry<string | null>>();
@@ -137,7 +136,7 @@ export class BoardCollector {
     if (invalidateFleet) this.fleet.invalidate();
     this.generation += 1;
     this.globalGeneration += 1;
-    this.childrenCache.clear();
+    this.treeCache.clear();
     this.timelineCache.clear();
     this.eventsCache.clear();
     this.outputCache.clear();
@@ -157,12 +156,6 @@ export class BoardCollector {
   }
 
   // -- individual reads ----------------------------------------------------
-
-  private childrenOf(threadId: string): Promise<ThreadListRow[]> {
-    return this.cached(this.childrenCache, threadId, TTL.children, async () =>
-      this.sdk.threads.list({ parentThreadId: threadId, includeHidden: true }),
-    );
-  }
 
   private timelineOf(threadId: string): Promise<TimelineResponse> {
     return this.cached(this.timelineCache, threadId, TTL.timeline, async () =>
@@ -228,6 +221,11 @@ export class BoardCollector {
   }
 
   // -- tree walk -----------------------------------------------------------
+  //
+  // One recursive descendants read plus one batched row read replace the
+  // per-node children listing. Rows come back in BB's thread-list order, so
+  // siblings keep the order the per-parent listing produced; the bounded
+  // breadth-first placement below then applies the same depth and count caps.
 
   private async walkTree(
     rootRow: ThreadRowLike,
@@ -237,43 +235,25 @@ export class BoardCollector {
     childIds: Map<string, string[]>;
     partial: boolean;
   }> {
-    const rows: ThreadRowLike[] = [rootRow];
-    const depths = new Map<string, number>([[rootRow.id, 0]]);
-    const childIds = new Map<string, string[]>([[rootRow.id, []]]);
-    const queue: Array<{ id: string; depth: number }> = [{ id: rootRow.id, depth: 0 }];
-    const seen = new Set<string>([rootRow.id]);
-    let partial = false;
-    while (queue.length > 0) {
-      const { id, depth } = queue.shift()!;
-      if (depth >= BOARD_LIMITS.maxDepth) {
-        // Depth frontier: one bounded probe so `partial` tells the truth about
-        // unseen deeper threads (we never walk them).
-        const deeper = await this.childrenOf(id);
-        if (deeper.length > 0) partial = true;
-        continue;
-      }
-      const children = await this.childrenOf(id);
-      const ids: string[] = [];
-      for (const child of children) {
-        if (seen.has(child.id)) continue;
-        if (rows.length >= BOARD_LIMITS.maxThreads) {
-          partial = true;
-          break;
-        }
-        seen.add(child.id);
-        rows.push(child);
-        depths.set(child.id, depth + 1);
-        ids.push(child.id);
-        childIds.set(child.id, []);
-        queue.push({ id: child.id, depth: depth + 1 });
-      }
-      childIds.set(id, ids);
-      if (rows.length >= BOARD_LIMITS.maxThreads) {
-        partial = true;
-        break;
-      }
-    }
-    return { rows, depths, childIds, partial };
+    const descendants = await this.cached(this.treeCache, rootRow.id, TTL.tree, async () => {
+      const listed = await this.sdk.threads.experimental_listDescendants({
+        threadIds: [rootRow.id],
+        includeHidden: true,
+      });
+      const descendantIds =
+        listed.threads.find((entry) => entry.threadId === rootRow.id)?.descendantIds ?? [];
+      const candidateIds = descendantIds.slice(0, TREE_ROW_READ_LIMIT);
+      const rows: ThreadRowLike[] =
+        candidateIds.length === 0
+          ? []
+          : await this.sdk.threads.list({
+              threadIds: candidateIds,
+              includeHidden: true,
+              limit: candidateIds.length,
+            });
+      return { rows, truncated: descendantIds.length > candidateIds.length };
+    });
+    return placeTree(rootRow, descendants.rows, descendants.truncated);
   }
 
   // -- snapshot ------------------------------------------------------------
@@ -323,9 +303,23 @@ export class BoardCollector {
       string,
       { label: string | null; output: string | null }
     >();
+    const facts = await mapWithConcurrency(rows, SNAPSHOT_READ_CONCURRENCY, async (row) => {
+      const isRoot = row.id === rootThreadId;
+      const needsOutput = row.status === "idle" || (!isRoot && row.status === "error");
+      const needsEvents = row.status === "error";
+      const [timeline, model, output, events, queuedMessages] = await Promise.all([
+        this.timelineOf(row.id),
+        this.modelOf(row.id),
+        needsOutput ? this.outputOf(row.id) : Promise.resolve(null),
+        needsEvents ? this.eventsTail(row.id) : Promise.resolve(undefined),
+        (row.queuedMessageCount ?? 0) > 0
+          ? this.queuedMessagesOf(row.id)
+          : Promise.resolve(undefined),
+      ]);
+      return { row, isRoot, timeline, model, output, events, queuedMessages };
+    });
     const timelines = new Map<string, TimelineResponse>();
-    for (const row of rows) {
-      const timeline = await this.timelineOf(row.id);
+    for (const { row, timeline } of facts) {
       timelines.set(row.id, timeline);
       for (const item of delegationIndex(timeline)) {
         if (item.childRef && !delegationsByChild.has(item.childRef)) {
@@ -337,21 +331,8 @@ export class BoardCollector {
       }
     }
 
-    for (const row of rows) {
-      const timeline = timelines.get(row.id);
-      if (!timeline) continue;
-      const isRoot = row.id === rootThreadId;
-      const needsOutput = row.status === "idle" || (!isRoot && row.status === "error");
-      const needsEvents = row.status === "error";
-      const [model, output, events, queuedMessages] = await Promise.all([
-        this.modelOf(row.id),
-        needsOutput ? this.outputOf(row.id) : Promise.resolve(null),
-        needsEvents ? this.eventsTail(row.id) : Promise.resolve(undefined),
-        (row.queuedMessageCount ?? 0) > 0
-          ? this.queuedMessagesOf(row.id)
-          : Promise.resolve(undefined),
-      ]);
-      const facts: ThreadFacts = {
+    for (const { row, isRoot, timeline, model, output, events, queuedMessages } of facts) {
+      const threadFacts: ThreadFacts = {
         row,
         timeline,
         events,
@@ -363,7 +344,7 @@ export class BoardCollector {
         childThreadIds: childIds.get(row.id) ?? [],
       };
       const delegation = isRoot ? null : (delegationsByChild.get(row.id) ?? null);
-      for (const card of normalizeThread(facts, ctx, delegation)) cards.push(card);
+      for (const card of normalizeThread(threadFacts, ctx, delegation)) cards.push(card);
     }
 
     // Root summary carries goal + context window usage from the root timeline.
@@ -837,6 +818,71 @@ function globalSummaryCard(
 }
 
 /** Small fixed-concurrency mapper so bounded enrichment does not become a request burst. */
+/** Per-snapshot parallelism for the per-thread reads. */
+const SNAPSHOT_READ_CONCURRENCY = 6;
+/** One batched row read; `threads.list({ threadIds })` accepts 200 ids. */
+const TREE_ROW_READ_LIMIT = 200;
+
+/**
+ * Bounded breadth-first placement of a root's descendants. Only threads
+ * reachable from the root through placed parents are kept (a child of an
+ * archived thread is not), matching a walk of per-parent listings. `partial`
+ * is true when a reachable thread was left out by the depth or count cap, or
+ * when the descendant list was longer than one row read.
+ */
+export function placeTree(
+  rootRow: ThreadRowLike,
+  descendantRows: readonly ThreadRowLike[],
+  truncated: boolean,
+): {
+  rows: ThreadRowLike[];
+  depths: Map<string, number>;
+  childIds: Map<string, string[]>;
+  partial: boolean;
+} {
+  const childrenByParent = new Map<string, ThreadRowLike[]>();
+  for (const row of descendantRows) {
+    const parentId = row.parentThreadId ?? null;
+    if (parentId === null || row.id === rootRow.id) continue;
+    const siblings = childrenByParent.get(parentId);
+    if (siblings) siblings.push(row);
+    else childrenByParent.set(parentId, [row]);
+  }
+  const rows: ThreadRowLike[] = [rootRow];
+  const depths = new Map<string, number>([[rootRow.id, 0]]);
+  const childIds = new Map<string, string[]>([[rootRow.id, []]]);
+  let partial = truncated;
+  const queue: Array<{ id: string; depth: number }> = [{ id: rootRow.id, depth: 0 }];
+  for (let index = 0; index < queue.length; index += 1) {
+    const { id, depth } = queue[index]!;
+    const children = childrenByParent.get(id) ?? [];
+    if (children.length === 0) continue;
+    if (depth >= BOARD_LIMITS.maxDepth) {
+      partial = true;
+      continue;
+    }
+    const ids: string[] = [];
+    for (const child of children) {
+      if (depths.has(child.id)) continue;
+      if (rows.length >= BOARD_LIMITS.maxThreads) {
+        partial = true;
+        break;
+      }
+      rows.push(child);
+      depths.set(child.id, depth + 1);
+      childIds.set(child.id, []);
+      ids.push(child.id);
+      queue.push({ id: child.id, depth: depth + 1 });
+    }
+    childIds.set(id, ids);
+    if (rows.length >= BOARD_LIMITS.maxThreads) {
+      if (queue.slice(index + 1).some((pending) => childrenByParent.has(pending.id))) partial = true;
+      break;
+    }
+  }
+  return { rows, depths, childIds, partial };
+}
+
 async function mapWithConcurrency<T, R>(
   values: readonly T[],
   concurrency: number,

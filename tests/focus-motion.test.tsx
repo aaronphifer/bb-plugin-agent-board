@@ -5,6 +5,7 @@
 // module state: a poisoned entry from an earlier test would mask the stub.
 import { describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot, type CapturedPluginApp, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
+import { boardTabComponent } from "./board-tab";
 import type { BoardCard, BoardSnapshot } from "@/contract/rpc";
 
 let app: CapturedPluginApp;
@@ -99,9 +100,8 @@ function scanFocusSnapshot(): BoardSnapshot {
 }
 
 function mountBoard(options: Parameters<typeof renderSlot>[2] = {}): RenderedSlot {
-  const registration = app.threadPanelActions[0]!;
   return renderSlot(
-    { component: registration.component },
+    { component: boardTabComponent(app) },
     { threadId: "thr_root", params: null } as never,
     options,
   );

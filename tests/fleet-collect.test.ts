@@ -36,6 +36,9 @@ async function setup(fleet: () => unknown) {
       threads: {
         get: async () => root,
         list: async (args) => (args?.parentThreadId ? [] : [root]),
+        experimental_listDescendants: async (args) => ({
+          threads: args.threadIds.map((threadId) => ({ threadId, descendantIds: [] })),
+        }),
         defaultExecutionOptions: async () => ({ model: "parent-model" }),
         timeline: async () => ({
           rows: [],
@@ -125,6 +128,9 @@ describe("Fleet through Agent Board RPCs", () => {
       const h = await setup(() => wire([current]));
       await h.harness.behavior.callRpc("board_snapshot", {
         threadId: "parent",
+      });
+      h.harness.behavior.experimental_watchRpc("board_snapshot", {
+        input: { threadId: "parent" },
       });
       current = job({
         state,
