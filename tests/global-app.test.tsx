@@ -305,10 +305,12 @@ describe("global refresh behavior", () => {
   it("uses one slow discovery timer and stops it on unmount", async () => {
     vi.useFakeTimers();
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot() } });
-    await vi.runOnlyPendingTimersAsync();
+    // Flush initial work without advancing to unrelated hourly update timers.
+    await vi.advanceTimersByTimeAsync(0);
     const initial = slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length;
+    expect(initial).toBe(1);
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS);
-    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length).toBeGreaterThan(initial);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length).toBe(initial + 1);
     const beforeUnmount = slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length;
     slot.unmount();
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS * 2);
