@@ -3,12 +3,12 @@ import type { KvLike } from "./dismissals";
 
 export const CURRENT_RELEASE = {
   version: manifest.version,
-  title: "A clearer view of agent activity",
+  title: "Catch up, take action, and browse earlier activity",
   highlights: [
-    "See recent or quiet reporting without treating long tasks as stalled.",
-    "Filter and group visible work by project, repository, provider and status.",
-    "Review completion results, failures and agent-reported verification.",
-    "Check connection, refresh and watcher health; empty attention stays compact.",
+    "Reply to questions, review approvals, and inspect failures from Needs Attention.",
+    "Catch up on changes, save dashboard views, and review completed work.",
+    "Load earlier BB timeline activity without losing your place.",
+    "See available releases and review compatible updates before installing.",
   ],
 };
 const STORAGE_KEY = "release-dismissals";

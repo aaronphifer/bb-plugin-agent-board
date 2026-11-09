@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { activityFreshness, EMPTY_FILTERS, filterDashboard, filterOptions, matchesFilters, groupExecutions, completionSummary, reportedCompletion } from "../lib/dashboard-view";
+import { activityFreshness, EMPTY_FILTERS, filterDashboard, filterOptions, matchesFilters, groupExecutions, completionSummary, reportedCompletion, resultLinks } from "../lib/dashboard-view";
 import { buildGlobalExecution } from "../lib/global-model";
 import { safeRepositoryLabel } from "../lib/collect";
 import { phaseCard as card, phaseExecution as execution, phaseSnapshot as snapshot } from "./vnext-fixtures";
@@ -46,6 +46,14 @@ describe("bounded filtering and grouping", () => {
   });
 });
 describe("completion provenance and repository privacy", () => {
+  it("retains bounded review links while refusing credentials and non-HTTPS targets", () => {
+    expect(resultLinks("[PR](https://github.com/acme/repo/pull/1) [bad](javascript:alert) [secret](https://user:password@example.com/a) [local](/tmp/out.txt)")).toEqual([{ label: "PR", url: "https://github.com/acme/repo/pull/1" }]);
+  });
+  it("does not expose credential parameters through result links", () => {
+    for (const parameter of ["access_token", "api-key", "auth%5Ftoken", "password", "secret", "X-Amz-Signature"]) {
+      expect(resultLinks(`[Artifact](https://example.com/report?${parameter}=private-value)`)).toEqual([]);
+    }
+  });
   it("omits absent completion metadata on legacy adapters and preserves their preview fallback", () => {
     const e = buildGlobalExecution({ key: "legacy", source: "bb", title: "legacy", threadId: "legacy", projectId: null, updatedAt: 1, cards: [card({ outputPreview: "Tests: not run", status: "completed" })] });
     expect(Object.hasOwn(e.card, "reportedVerification")).toBe(false);

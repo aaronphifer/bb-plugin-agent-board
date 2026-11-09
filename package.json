@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-agent-board",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "type": "module",
   "files": [
     "app.tsx",
@@ -18,7 +18,9 @@
     "PLUGIN_OVERVIEW.md",
     "CHANGELOG.md",
     "RELEASE_NOTES.md",
-    "docs/upgrade-0.7.0.md"
+    "docs/upgrade-0.7.0.md",
+    "docs/daily-workflow.md",
+    "docs/validation-0.7.1.md"
   ],
   "scripts": {
     "test": "vitest run",

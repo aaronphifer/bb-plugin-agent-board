@@ -18,6 +18,7 @@ import { StatusChip } from "@/components/board/status-chip";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { UpdateAvailable } from "@/components/global/update-available";
 
 export function Board({ rootThreadId }: { rootThreadId: string }) {
   const { snapshot, loading, refreshing, error, tick, refetch } = useBoard(rootThreadId);
@@ -46,6 +47,7 @@ export function Board({ rootThreadId }: { rootThreadId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+      <div className="px-4"><UpdateAvailable /></div>
       {/* Header: root identity, goal, model, live indicator, refresh. */}
       <header className="border-b border-border px-4 py-3">
         <div className="flex items-start gap-3">

@@ -1,8 +1,9 @@
 # Agent Board 0.7.0 compatibility and upgrade notes
 
-The current PR source is **0.7.0**, prepared but unpublished. Do not install it
-over a stable installation as part of release review. The public 0.6.1 tag remains
-the existing released installation until a separately approved publication.
+Version 0.7.0 was published on 12 October 2026. Version 0.7.1 continues the
+compatible 0.7.x line and adds daily monitoring, timeline paging and update UI.
+See [0.7.1 validation](validation-0.7.1.md) for current evidence; the historical
+0.7.0 runtime checks below are not new compatibility tests for 0.7.1.
 
 ## Compatibility
 
@@ -53,20 +54,24 @@ releases. Missing/malformed dismissal storage shows the announcement again;
 storage read/write failures are surfaced. Only the latest 20 dismissed versions
 are retained. Bundled notes can be reopened after dismissal.
 
-After final approval and publication only:
+For a new installation:
 
 ```sh
 bb plugin install git:https://github.com/aaronphifer/bb-plugin-agent-board.git@^0.7.0
 ```
 
-Reinstalling the same identity through BB replaces its source while retaining
-plugin preferences; do not remove/uninstall first, because removal deletes
-plugin storage. Exact tag/commit installations stay pinned. `^0.6.1` permits
+Use BB's update action for an existing managed installation. BB can refuse
+reinstalling an already registered managed identity; do not uninstall it as an
+update step because removal can delete plugin storage. Local path installs are
+reloaded from their checkout instead of updated from Git. Exact tag/commit installations stay pinned. `^0.6.1` permits
 0.6.x but excludes 0.7.0. Changing the marketplace entry to `^0.7.0` affects new
 selections, not the selector already stored by an existing installation.
 
 BB checks managed Git/npm installations for compatible updates and presents
 them for an explicit update action. Path/builtin sources are pinned. Stable
 semver ranges exclude prereleases unless the range explicitly names one.
-Agent Board's What's New appears after installing a new version; it does not
-discover remote releases, send push notifications or install updates itself.
+Agent Board's What's New appears after installing a new version. In 0.7.1, a
+separate update card checks public GitHub releases, offers Review update when
+BB reports an eligible candidate, and asks for confirmation before calling BB's
+update operation. Out-of-range and pinned sources remain advisory. It sends no
+push notification and does not install updates automatically.

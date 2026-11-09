@@ -22,6 +22,37 @@
   box-sizing: border-box;
 }
 
+/* Calm, state-driven hierarchy. The live strip remains indeterminate. */
+.ab-global-dashboard [data-global-card="active"] {
+  border-inline-start: 2px solid color-mix(in srgb, var(--primary) 38%, var(--border));
+}
+.ab-global-dashboard [data-global-card="active"][data-status="waiting"],
+.ab-global-dashboard [data-global-card="attention"] {
+  border-inline-start: 2px solid color-mix(in srgb, #b78632 45%, var(--border));
+}
+.ab-global-dashboard [data-global-card="attention"][data-attention-type="failed"] {
+  border-inline-start-color: color-mix(in srgb, var(--destructive) 65%, var(--border));
+}
+.ab-global-dashboard [data-part="execution-model"] {
+  margin-top: 3px;
+  font-size: 11px;
+}
+.ab-global-dashboard [data-part="execution-activity"] {
+  margin-top: 10px;
+  color: var(--foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+.ab-global-dashboard .ab-update-detail[open] { flex-basis: 100%; }
+.ab-global-dashboard [data-global-card="recent"] {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 0;
+}
+.ab-global-dashboard [data-part="recent-title"] { font-size: 13px; }
+
 /* --- 1. Active pulse: the live dot and the active pipeline node breathe
         slowly (opacity/shadow nuance only — no card ever expands). ------- */
 @keyframes ab-breathe {

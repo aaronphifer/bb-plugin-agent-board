@@ -183,7 +183,7 @@ export function stripFencedBlocks(text: string): string {
  */
 export function publicUpdatePreview(
   text: string | null | undefined,
-  max = BOARD_LIMITS.publicUpdateChars,
+  max: number = BOARD_LIMITS.publicUpdateChars,
 ): string | null {
   if (typeof text !== "string") return null;
   return previewText(redactOperationalText(stripFencedBlocks(text)), max);

@@ -130,6 +130,16 @@ export const boardCardSchema = z.object({
   /** Explicit agent-reported labels, retained before output preview truncation. */
   completionResult: z.string().max(240).nullable().optional(),
   reportedVerification: z.array(z.string().max(240)).max(4).optional(),
+  review: z.object({
+    objective: z.string().max(320).nullable(),
+    goalStatus: z.string().max(40).nullable(),
+    changedPaths: z.array(z.string().max(240)).max(12),
+    links: z.array(z.object({ label: z.string().max(80), url: z.string().max(500) })).max(4).optional(),
+  }).optional(),
+  reviewThreadId: z.string().nullable().optional(),
+  interaction: z.object({ kind: z.enum(["question", "approval"]), at: z.number() }).optional(),
+  /** Native delegations belong to a BB thread; childRef need not be a BB ID. */
+  ownerThreadId: z.string().optional(),
   /**
    * Latest user-visible assistant-authored text (bounded excerpt). Strictly
    * conversational: never reasoning, tool/command output, or user/system
@@ -226,10 +236,14 @@ export const globalExecutionSchema = z.object({
   delegatedWorkers: z.array(boardCardSchema).max(4).optional(),
   projectName: z.string().nullable().optional(),
   repository: z.string().nullable().optional(),
+  workspaceId: z.string().nullable().optional(),
+  workspaceName: z.string().max(240).nullable().optional(),
+  branch: z.string().max(240).nullable().optional(),
   delegatedWorkerCount: z.number().int().nonnegative().optional(),
   activeDelegatedWorkerCount: z.number().int().nonnegative().optional(),
   childCount: z.number().int().nonnegative(),
   activeChildCount: z.number().int().nonnegative(),
+  children: z.array(boardCardSchema).max(12).optional(),
   updatedAt: z.number(),
 });
 export type GlobalExecution = z.infer<typeof globalExecutionSchema>;
@@ -247,6 +261,7 @@ export const attentionItemSchema = z.object({
   threadId: z.string().nullable(),
   source: boardCardSourceSchema,
   scanId: z.string().optional(),
+  interactionKind: z.enum(["question", "approval"]).optional(),
 });
 export type AttentionItem = z.infer<typeof attentionItemSchema>;
 
@@ -322,6 +337,8 @@ export const executionTimelineSchema = z.object({
   active: z.boolean(),
   /** True means older source rows or normalized events were omitted. */
   truncated: z.boolean(),
+  /** Continuation for earlier events. Each response remains bounded. */
+  olderCursor: z.string().max(4096).nullable().optional(),
   /** Non-fatal degradation, e.g. lifecycle rows temporarily unavailable. */
   sourceWarning: z.string().max(240).nullable(),
   fetchedAt: z.number().int().nonnegative(),
@@ -340,6 +357,7 @@ const executionTimelineInputSchema = z.discriminatedUnion("source", [
     executionKey: z.string().min(1).max(240),
     threadId: z.string().min(1).max(240),
     limit: z.number().int().min(1).max(80).optional(),
+    cursor: z.string().min(1).max(4096).optional(),
   }),
   z.object({
     source: z.literal("redteam"),
@@ -396,6 +414,14 @@ export const boardChangedPayloadSchema = z.object({
 });
 
 export const rpcContract = {
+  release_update: {
+    input: z.object({}),
+    output: z.object({ installed: z.string().max(80), latest: z.string().max(80).nullable(), releaseUrl: z.string().max(240).nullable(), eligible: z.object({ version: z.string().max(200), display: z.string().max(240) }).nullable(), discoveryUnavailable: z.boolean() }),
+  },
+  install_update: {
+    input: z.object({ expectedVersion: z.string().min(1).max(200) }),
+    output: z.object({ applied: z.boolean(), outcome: z.string(), detail: z.string().max(320).nullable() }),
+  },
   release_announcement: {
     input: z.object({}),
     output: z.object({ version: z.string(), title: z.string(), highlights: z.array(z.string()), dismissed: z.boolean() }),

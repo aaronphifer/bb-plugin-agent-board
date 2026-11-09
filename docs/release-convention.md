@@ -1,8 +1,8 @@
 # Release notes convention
 
-This work is unreleased. `0.7.0` is prepared on the development PR branch after
-the RC hardening/CI gates passed. It is not a public tag, release, marketplace or
-production update. The changelog preparation date is not a publication date.
+The public release line is 0.7.x. Verify current tags and GitHub releases before
+choosing a new version; never move an existing release tag. Local preparation
+and a changelog date do not by themselves constitute publication.
 
 For each approved release:
 
@@ -19,7 +19,8 @@ For each approved release:
    pre-releases. A repository tag/release or marketplace change requires the
    maintainer's explicit approval; this convention grants none.
 
-The UI reads only bundled notes, never GitHub or the marketplace. Dismissal is
+The What’s New UI reads bundled highlights; the separate update card checks
+GitHub release metadata and BB-eligible candidates. Announcement dismissal is
 stored in plugin KV for the exact version (latest 20 dismissed versions), so
 reloads retain dismissal, upgrades show new notes, and a recent downgrade
 retains its old dismissal. Release notes can be opened later from the dashboard.

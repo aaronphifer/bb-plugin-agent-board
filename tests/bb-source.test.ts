@@ -130,6 +130,30 @@ function queuedMessage(fields: Record<string, unknown>): QueuedMessageRow {
 }
 
 describe("thread card normalization", () => {
+  it("uses specific operation targets instead of generic presentation labels", () => {
+    const row = workRow("command", { command: "npm test", presentation: { label: { completed: "Ran command", pending: "Running command" } } });
+    expect(latestActivity([row])?.text).toContain("npm test");
+  });
+  it("shows the explicit pending question and its timestamp", () => {
+    const question = workRow("question", { status: "pending", lifecycle: "pending", startedAt: 700, questions: [{ prompt: "Which deployment target?" }] });
+    const root = normalizeThread(facts({ timeline: timeline({ rows: [question] }) }), ctx, null)[0]!;
+    expect(root.attention?.message).toBe("Which deployment target?");
+    expect(root.interaction).toMatchObject({ kind: "question", at: 700 });
+  });
+  it("retains bounded observed review evidence without claiming verified completion", () => {
+    const change = workRow("file-change", { change: { path: "src/auth.ts", kind: "update" } });
+    const root = normalizeThread(facts({ row: threadRow({ status: "idle" }), output: "Done.\nTests: 12 passed", timeline: timeline({ rows: [change], goal: { objective: "Fix auth", status: "complete" } as never }) }), ctx, null)[0]!;
+    expect(root.review).toMatchObject({ objective: "Fix auth", goalStatus: "complete", changedPaths: ["src/auth.ts"] });
+  });
+  it("keeps native subagent references out of BB navigation and exposes child activity", () => {
+    const child = workRow("command", { command: "npm test" });
+    const delegated = workRow("delegation", { status: "pending", completedAt: null, description: "Check tests", childRef: "/root/reviewer", output: "", childRows: [child] });
+    const worker = normalizeThread(facts({ timeline: timeline({ rows: [delegated] }) }), ctx, null).find(c => c.kind === "delegation")!;
+    expect(worker.threadId).toBeNull();
+    expect(worker.ownerThreadId).toBe("thr_root");
+    expect(worker.activity?.text).toContain("npm test");
+    expect(worker.model).toBeNull();
+  });
   it("retains explicit bounded completion labels beyond the preview", () => {
     const output = "Review details. ".repeat(100) + "\n**Result:** Boundary review completed\n**Tests:** not run (review only)";
     const root = normalizeThread(facts({ output }), ctx, null).find(c => c.kind === "thread")!;
@@ -229,12 +253,12 @@ describe("status normalization", () => {
   it("attaches explicit action-required metadata for approvals and questions", () => {
     const approvalRows = [workRow("command", { command: "deploy", approvalStatus: "waiting_for_approval" })];
     const approval = normalizeThread(facts({ timeline: timeline({ rows: approvalRows as never }) }), ctx, null)[0]!;
-    expect(approval.attention).toEqual({ type: "action-required", message: "Approval required" });
+    expect(approval.attention).toEqual({ type: "action-required", message: "Command: deploy" });
     expect(approval.waitingOn).toBe("Approval required");
 
     const questionRows = [workRow("question", { lifecycle: "pending", questions: [{ prompt: "Which db?" }] })];
     const question = normalizeThread(facts({ timeline: timeline({ rows: questionRows as never }) }), ctx, null)[0]!;
-    expect(question.attention).toEqual({ type: "action-required", message: "Input required" });
+    expect(question.attention).toEqual({ type: "action-required", message: "Which db?" });
     expect(question.waitingOn).toBe("Input required");
   });
 
@@ -484,7 +508,8 @@ describe("delegation normalization", () => {
     const delegations = cards.filter((card) => card.kind === "delegation");
     expect(delegations).toHaveLength(2);
     expect(delegations[0]!.status).toBe("completed");
-    expect(delegations[0]!.threadId).toBe("thr_gone");
+    expect(delegations[0]!.threadId).toBeNull();
+    expect(delegations[0]!.ownerThreadId).toBe("thr_root");
     expect(delegations[1]!.status).toBe("interrupted");
     expect(delegations[1]!.column).toBe("output");
   });
@@ -661,7 +686,7 @@ describe("latestActivity", () => {
       }),
     ];
     const activity = latestActivity(rows);
-    expect(activity?.text).toBe("Editing src/auth.ts");
+    expect(activity?.text).toBe("Edit: src/auth.ts");
     expect(activity?.kind).toBe("file-change");
   });
 
@@ -669,7 +694,7 @@ describe("latestActivity", () => {
     const cases: Array<[TimelineWorkRow, string]> = [
       [workRow("web-search", { queries: ["bb plugin sdk docs"] }), "Web search: bb plugin sdk docs"],
       [workRow("web-fetch", { url: "https://example.com/api" }), "Fetch: https://example.com/api"],
-      [workRow("file-read", { path: "package.json" }), "package.json"],
+      [workRow("file-read", { path: "package.json" }), "Read: package.json"],
       [workRow("image-view", { path: "shot.png" }), "shot.png"],
       [workRow("search", { mode: "content", query: "TODO" }), "Search: TODO"],
     ];

@@ -165,7 +165,8 @@ describe("snapshot assembly", () => {
     expect(delegation).toBeDefined();
     expect(delegation!.title).toBe("Fix the tests");
     expect(delegation!.outputPreview).toBe("All 12 tests pass.");
-    expect(delegation!.threadId).toBe("thr_child");
+    expect(delegation!.threadId).toBeNull();
+    expect(delegation!.ownerThreadId).toBe("thr_root");
   });
 });
 
@@ -278,6 +279,52 @@ describe("bounded fetching and caching", () => {
 });
 
 describe("lazy execution timeline RPC source", () => {
+  it("retries a lifecycle page after a temporary source failure", async () => {
+    const overrides = twoThreadOverrides(); let calls = 0;
+    (overrides.threads as Record<string, unknown>).timeline = async () => timelineFixture();
+    (overrides.threads as Record<string, unknown>).events = { list: async () => { if (++calls === 1) throw Error("offline"); return [{ id: "recovered", seq: 1, createdAt: 1, type: "client/turn/requested", data: { execution: { model: "recovered-model" } } }]; } };
+    const { collector } = makeCollector(overrides);
+    const target = { source: "bb" as const, executionKey: "bb:thr_root", threadId: "thr_root" };
+    const first = await collector.executionTimeline(target);
+    expect(first.olderCursor).toBeTruthy();
+    const recovered = await collector.executionTimeline({ ...target, cursor: first.olderCursor! });
+    expect(recovered.events.some(e => e.model === "recovered-model")).toBe(true);
+  });
+  it("refuses malformed or cross-thread history cursors before reading source data", async () => {
+    const { collector, harness } = makeCollector(twoThreadOverrides());
+    await expect(collector.executionTimeline({ source: "bb", executionKey: "bb:x", threadId: "x", cursor: "not-a-cursor" })).rejects.toThrow("cursor is invalid");
+    expect(harness.callsTo("threads.timeline")).toHaveLength(0);
+  });
+  it("continues lifecycle history after the thread-row pages are exhausted", async () => {
+    const overrides = twoThreadOverrides();
+    const event = (seq: number) => ({ id: `e-${seq}`, seq, createdAt: seq, type: "client/turn/requested", data: { execution: { model: `model-${seq}` } } });
+    (overrides.threads as Record<string, unknown>).timeline = async () => timelineFixture();
+    (overrides.threads as Record<string, unknown>).events = { list: async (input: { beforeSeq?: string }) => input.beforeSeq ? [event(1)] : Array.from({ length: 80 }, (_, i) => event(i + 100)) };
+    const { collector } = makeCollector(overrides);
+    const target = { source: "bb" as const, executionKey: "bb:thr_root", threadId: "thr_root" };
+    const first = await collector.executionTimeline(target);
+    const second = await collector.executionTimeline({ ...target, cursor: first.olderCursor! });
+    const third = await collector.executionTimeline({ ...target, cursor: second.olderCursor! });
+    expect(new Set([...first.events, ...second.events, ...third.events].map(e => e.id)).size).toBe(81);
+    expect(third.olderCursor).toBeNull();
+  });
+  it("drains a normalized page before advancing the public BB history cursor", async () => {
+    const overrides = twoThreadOverrides();
+    (overrides.threads as Record<string, unknown>).timeline = async (input: TimelineArgsLike) => {
+      if (input.beforeAnchorId) return timelineFixture({ rows: [delegationRow("older", { id: "old", childRef: null, status: "pending", startedAt: 1, createdAt: 1 })], timelinePage: { hasOlderRows: false, olderCursor: null } });
+      return timelineFixture({ rows: Array.from({ length: 110 }, (_, i) => delegationRow(String(i), { id: `new-${i}`, childRef: null, status: "pending", startedAt: i + 100, createdAt: i + 100 })), timelinePage: { hasOlderRows: true, olderCursor: { anchorId: "anchor", anchorSeq: 100 } } });
+    };
+    const { collector, harness } = makeCollector(overrides);
+    const target = { source: "bb" as const, executionKey: "bb:thr_root", threadId: "thr_root" };
+    const first = await collector.executionTimeline(target);
+    expect(first.olderCursor).toBeTruthy();
+    const second = await collector.executionTimeline({ ...target, cursor: first.olderCursor! });
+    const third = await collector.executionTimeline({ ...target, cursor: second.olderCursor! });
+    const fourth = await collector.executionTimeline({ ...target, cursor: third.olderCursor! });
+    expect(new Set([...first.events, ...second.events, ...third.events, ...fourth.events].map(e => e.id)).size).toBeGreaterThanOrEqual(111);
+    expect(harness.callsTo("threads.timeline").at(-1)?.[0]).toMatchObject({ beforeAnchorId: "anchor", beforeAnchorSeq: "100" });
+    expect(fourth.olderCursor).toBeNull();
+  });
   it("adds no collection calls until requested and uses one BB timeline plus one lifecycle tail", async () => {
     const { collector, harness } = makeCollector(twoThreadOverrides());
     expect(harness.calls).toHaveLength(0);

@@ -24,6 +24,9 @@ export interface GlobalExecutionGroup {
   title: string;
   threadId: string | null;
   projectId: string | null;
+  workspaceId?: string | null;
+  workspaceName?: string | null;
+  branch?: string | null;
   scanId?: string;
   cards: BoardCard[];
   delegatedWorkers?: BoardCard[];
@@ -81,6 +84,7 @@ export function buildGlobalExecution(group: GlobalExecutionGroup): GlobalExecuti
   const activeWorkers = workers.filter(c => c.status === "running" || c.status === "starting");
   const status = activeWorkers.length ? "running" : executionStatus(group.cards);
   const primary = representative(group.cards, status) ?? group.cards[0] ?? null;
+  const reviewCard = status === "completed" ? group.cards.find(c => c.isRoot && c.review !== undefined) ?? primary : primary;
   const children = group.cards.filter(
     (card) => !card.isRoot && card.kind !== "plan-step" && card.kind !== "queued-message",
   );
@@ -122,9 +126,10 @@ export function buildGlobalExecution(group: GlobalExecutionGroup): GlobalExecuti
     promptPreview: null,
     activity: primary?.activity ?? null,
     lastActivityAt: activityTimes.length ? Math.max(...activityTimes) : null,
-    outputPreview: primary?.outputPreview ?? null,
-    completionResult: primary?.completionResult ?? null,
-    ...(primary?.reportedVerification !== undefined ? { reportedVerification: primary.reportedVerification } : {}),
+    outputPreview: reviewCard?.outputPreview ?? null,
+    completionResult: reviewCard?.completionResult ?? null,
+    ...(reviewCard?.reportedVerification !== undefined ? { reportedVerification: reviewCard.reportedVerification } : {}),
+    ...(reviewCard?.review ? { review: reviewCard.review, reviewThreadId: reviewCard.threadId } : {}),
     latestPublicUpdate,
     errorPreview: primary?.errorPreview ?? null,
     tokens: primary?.tokens ?? null,
@@ -143,9 +148,13 @@ export function buildGlobalExecution(group: GlobalExecutionGroup): GlobalExecuti
     key: group.key,
     card,
     projectId: group.projectId,
+    workspaceId: group.workspaceId ?? null,
+    workspaceName: group.workspaceName ?? null,
+    branch: group.branch ?? null,
     ...(workers.length ? { delegatedWorkers: [...workers].sort((a,b) => Number(b.status === "running" || b.status === "starting") - Number(a.status === "running" || a.status === "starting")).slice(0,4), delegatedWorkerCount: workers.length, activeDelegatedWorkerCount: activeWorkers.length } : {}),
     childCount: children.length,
     activeChildCount: activeChildren.length,
+    children: [...children].sort((a, b) => Number(["running", "starting", "waiting"].includes(b.status)) - Number(["running", "starting", "waiting"].includes(a.status))).slice(0, 12),
     updatedAt: group.updatedAt,
   };
 }
@@ -218,7 +227,7 @@ export function deriveAttentionItems(
         return atB - atA;
       })[0]!;
       const observedTimes = cards.map(
-        (card) => card.activity?.at ?? card.startedAt ?? group.updatedAt,
+        (card) => card.interaction?.at ?? card.activity?.at ?? card.startedAt ?? group.updatedAt,
       );
       const message =
         cards.length === 1
@@ -235,6 +244,7 @@ export function deriveAttentionItems(
         updatedAt: group.updatedAt,
         threadId: newest.threadId ?? group.threadId,
         source: group.source,
+        ...(newest.interaction ? { interactionKind: newest.interaction.kind } : {}),
         ...(group.scanId ? { scanId: group.scanId } : {}),
       });
     }

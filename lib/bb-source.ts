@@ -15,7 +15,7 @@
 //   presentation labels, outputs.
 // - Statuses are mapped losslessly enough to drive column placement.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { reportedCompletion } from "./dashboard-view";
+import { reportedCompletion, resultLinks } from "./dashboard-view";
 import type {
   BoardActivity,
   BoardActivityFeed,
@@ -30,6 +30,7 @@ import {
   isReasoningEventType,
   previewText,
   publicUpdatePreview,
+  redactOperationalText,
 } from "./board-model";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,9 @@ export interface ThreadRowLike {
   id: string;
   parentThreadId: string | null;
   projectId?: string | null;
+  environmentId?: string | null;
+  environmentName?: string | null;
+  environmentBranchName?: string | null;
   providerId: string | null;
   title: string | null;
   titleFallback: string | null;
@@ -134,6 +138,13 @@ export function workRows(rows: readonly TimelineRow[]): TimelineWorkRow[] {
 
 /** Presentation label for a work row, falling back to per-kind content. */
 export function activityTextForWorkRow(row: TimelineWorkRow): string {
+  // Operation and target are more useful than generic “Ran command” labels.
+  switch (row.workKind) {
+    case "command": return `Command: ${row.command}`;
+    case "file-read": return `Read: ${row.path}`;
+    case "file-change": return `Edit: ${row.change.path}`;
+    case "search": return row.mode === "content" ? `Search: ${row.query}` : `Search in ${row.path ?? "workspace"}`;
+  }
   // presentation is declared on most (not all) work-row variants.
   const presentation = (
     "presentation" in row ? row.presentation : undefined
@@ -144,20 +155,12 @@ export function activityTextForWorkRow(row: TimelineWorkRow): string {
     if (typeof chosen === "string" && chosen.length > 0) return chosen;
   }
   switch (row.workKind) {
-    case "command":
-      return row.command;
     case "tool":
       return row.toolName;
-    case "search":
-      return row.mode === "content" ? `Search: ${row.query}` : `Search in ${row.path ?? ""}`;
     case "web-search":
       return `Web search: ${row.queries[0] ?? ""}`;
     case "web-fetch":
       return `Fetch: ${row.url}`;
-    case "file-read":
-      return row.path;
-    case "file-change":
-      return row.change.path;
     case "image-view":
       return row.path;
     case "plan-steps":
@@ -182,7 +185,7 @@ export function latestActivity(rows: readonly TimelineRow[]): BoardActivity | nu
   if (!last) return null;
   const completedAt = "completedAt" in last ? (last.completedAt ?? null) : null;
   return {
-    text: previewText(activityTextForWorkRow(last), BOARD_LIMITS.activityChars) ?? last.workKind,
+    text: previewText(redactOperationalText(activityTextForWorkRow(last)), BOARD_LIMITS.activityChars) ?? last.workKind,
     at: completedAt ?? last.startedAt,
     kind: last.workKind,
   };
@@ -473,6 +476,11 @@ export function normalizeThread(
   const errorPreview = status === "failed" ? errorPreviewFor(facts) : null;
   const waitingOn = status === "waiting" || status === "queued" ? waitingOnText(facts) : null;
   const interaction = blockingInteractionKind(facts.timeline.rows);
+  const interactionRow = interaction === null ? null : [...workRows(facts.timeline.rows)].reverse().find(row =>
+    (row.workKind === "question" && (row.lifecycle === "pending" || row.lifecycle === "resolving")) ||
+    (row.workKind === "approval" && (row.lifecycle === "pending" || row.lifecycle === "waiting")) ||
+    ("approvalStatus" in row && row.approvalStatus === "waiting_for_approval"));
+  const interactionText = interactionRow ? previewText(redactOperationalText(activityTextForWorkRow(interactionRow)), BOARD_LIMITS.activityChars) : null;
   const attention: BoardCard["attention"] =
     status === "failed"
       ? { type: "failed", message: errorPreview ?? "Execution failed" }
@@ -481,7 +489,7 @@ export function normalizeThread(
         : status === "waiting" && (interaction !== null || facts.row.hasPendingInteraction === true)
           ? {
               type: "action-required",
-              message: interaction === "question" ? "Input required" : interaction === "approval" ? "Approval required" : "Waiting for you",
+              message: interactionText ?? (interaction === "question" ? "Input required" : interaction === "approval" ? "Approval required" : "Waiting for you"),
             }
           : status === "waiting"
             ? { type: "waiting", message: waitingOn ?? "Execution is waiting" }
@@ -516,8 +524,15 @@ export function normalizeThread(
     activity: latestActivity(facts.timeline.rows),
     lastActivityAt: latestPublicActivityAt(facts.timeline.rows),
     ...reportedCompletion(facts.output ?? delegation?.output),
+    review: {
+      objective: publicUpdatePreview(facts.timeline.goal?.objective, 320),
+      goalStatus: facts.timeline.goal?.status ?? null,
+      changedPaths: [...new Set(workRows(facts.timeline.rows).flatMap(row => row.workKind === "file-change" ? [previewText(redactOperationalText(row.change.path), 240)!] : []))].filter(Boolean).slice(0, 12),
+      links: resultLinks(facts.output),
+    },
+    ...(interaction && interactionRow ? { interaction: { kind: interaction, at: interactionRow.startedAt } } : {}),
     outputPreview:
-      previewText(facts.output ?? delegation?.output ?? null, BOARD_LIMITS.outputPreviewChars) ??
+      publicUpdatePreview(facts.output ?? delegation?.output ?? null, BOARD_LIMITS.outputPreviewChars) ??
       null,
     latestPublicUpdate: latestPublicUpdate(facts.timeline.rows),
     errorPreview,
@@ -819,7 +834,8 @@ function delegationCards(facts: ThreadFacts, parentKey: string): BoardCard[] {
       subtitle: delegation.background ? "background delegation" : "delegation",
       status,
       column: columnForStatus(status, "delegation"),
-      threadId: delegation.childRef,
+      threadId: null,
+      ownerThreadId: facts.row.id,
       providerId: null,
       providerLabel: null,
       model: null,
@@ -831,8 +847,8 @@ function delegationCards(facts: ThreadFacts, parentKey: string): BoardCard[] {
           : null,
       phaseTitle: null,
       promptPreview: null,
-      activity: null,
-      outputPreview: previewText(delegation.output, BOARD_LIMITS.outputPreviewChars),
+      activity: latestActivity(delegation.childRows ?? []),
+      outputPreview: publicUpdatePreview(delegation.output, BOARD_LIMITS.outputPreviewChars),
       errorPreview: null,
       tokens: null,
       toolCalls: null,

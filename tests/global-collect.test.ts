@@ -47,7 +47,7 @@ function makeCollector(options: {
       }),
       timeline: vi.fn(async ({ threadId }: { threadId: string }) => timeline({ rows: threadId.includes("active") || threadId === "thr_child" ? [activeWork()] : [] })),
       defaultExecutionOptions: vi.fn(async ({ threadId }: { threadId: string }) => threadId === "thr_nomodel" ? null : { model: "qwen3:8b" }),
-      output: vi.fn(async () => ({ output: "Completed safely" })),
+      output: vi.fn(async (_input: { threadId: string }) => ({ output: "Completed safely" })),
       events: { list: vi.fn(async () => [{ id: "e", scope: "thread", threadId: "x", seq: 1, createdAt: 900, type: "system/error", data: { message: "Provisioning failed" } }]) },
       queuedMessages: { list: vi.fn(async () => []) },
     },
@@ -62,6 +62,13 @@ function makeCollector(options: {
 }
 
 describe("global BB collection", () => {
+  it("loads the parent review result after a newer child finishes", async () => {
+    const { collector, sdk } = makeCollector({ rows: [row("root", { updatedAt: 800 }), row("child", { parentThreadId: "root", updatedAt: 1000 })] });
+    sdk.threads.output.mockImplementation(async (input: { threadId: string }) => ({ output: input.threadId === "root" ? "Parent result" : "Child result" }));
+    const result = await collector.globalDashboard();
+    expect(result.recent[0]?.card.outputPreview).toBe("Parent result");
+    expect(result.recent[0]?.card.reviewThreadId).toBe("root");
+  });
   it("enriches project metadata once per project and strips remote credentials", async () => {
     const { collector, sdk } = makeCollector({ rows: [row("a", { status: "active" }), row("b", { status: "active" })], project: async () => ({ name: "Project", gitRemoteUrl: "https://user:secret@github.com/example/repo.git?token=private" }) });
     const result = await collector.globalDashboard();
@@ -90,7 +97,7 @@ describe("global BB collection", () => {
     expect(result.active[0]!.card.title).toBe("Parent operation");
     expect(result.active[0]!.card.threadId).toBe("thr_child");
     expect(result.active[0]!.card.model).toBe("qwen3:8b");
-    expect(result.active[0]!.card.activity?.text).toBe("Reading src/auth.ts");
+    expect(result.active[0]!.card.activity?.text).toBe("Read: src/auth.ts");
   });
 
   it("groups nested descendants without duplicate execution cards", () => {

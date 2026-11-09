@@ -15,6 +15,7 @@ import {
   redactOperationalText,
 } from "./board-model";
 import type { ThreadEventRow, TimelineResponse } from "./bb-source";
+import { compareTimelinePosition, type TimelinePosition } from "./timeline-pagination";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -32,7 +33,10 @@ export interface NormalizeBbTimelineInput {
   sourceWarning?: string | null;
   limit?: number;
   now?: number;
+  before?: TimelinePosition;
+  extraEvents?: readonly TimelineEvent[];
 }
+export type NormalizedTimeline = ExecutionTimeline & { nextBefore?: TimelinePosition };
 
 function record(value: unknown): UnknownRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -211,8 +215,9 @@ export function finalizeTimeline(
     sourceTruncated?: boolean;
     sourceWarning?: string | null;
     fetchedAt?: number;
+    before?: TimelinePosition;
   },
-): ExecutionTimeline {
+): NormalizedTimeline {
   const limit = Math.min(
     Math.max(options.limit ?? BOARD_LIMITS.executionTimelineDefaultEvents, 1),
     BOARD_LIMITS.executionTimelineMaxEvents,
@@ -230,9 +235,10 @@ export function finalizeTimeline(
   }
   const ordered = [...byFingerprint.values()].sort(
     (a, b) => a.timestamp - b.timestamp || a.sortSequence - b.sortSequence || a.id.localeCompare(b.id),
-  );
+  ).filter(event => !options.before || compareTimelinePosition({ timestamp: event.timestamp, sequence: event.sortSequence, id: event.id }, options.before) < 0);
   const truncated = options.sourceTruncated === true || ordered.length > limit;
   const events = ordered.slice(-limit).map(({ fingerprint: _fingerprint, sortSequence: _sort, ...event }) => event);
+  const first = ordered.at(-limit);
   return {
     executionKey,
     source,
@@ -241,6 +247,7 @@ export function finalizeTimeline(
     truncated,
     sourceWarning: safeText(options.sourceWarning, 240),
     fetchedAt: Math.trunc(options.fetchedAt ?? Date.now()),
+    ...(ordered.length > limit && first ? { nextBefore: { timestamp: first.timestamp, sequence: first.sortSequence, id: first.id } } : {}),
   };
 }
 
@@ -388,10 +395,11 @@ function lifecycleCandidates(input: NormalizeBbTimelineInput, base: Pick<Timelin
 }
 
 /** Normalize one public BB timeline response into source-independent events. */
-export function normalizeBbTimeline(input: NormalizeBbTimelineInput): ExecutionTimeline {
+export function normalizeBbTimeline(input: NormalizeBbTimelineInput): NormalizedTimeline {
   const base = { executionKey: input.executionKey, source: "bb" as const, threadId: input.threadId };
   const rows = flattenRows(input.timeline.rows);
   const candidates = lifecycleCandidates(input, base);
+  for (const event of input.extraEvents ?? []) candidates.push({ ...event, fingerprint: event.id, sortSequence: event.sourceMetadata?.sequence ?? 0 });
   const failedTurnErrors = new Map<string, string>();
   for (const row of rows) {
     if (row.kind !== "system" || row.systemKind !== "error") continue;
@@ -712,5 +720,6 @@ export function normalizeBbTimeline(input: NormalizeBbTimelineInput): ExecutionT
     sourceTruncated: page?.hasOlderRows === true || input.lifecycleTruncated === true,
     sourceWarning: input.sourceWarning,
     fetchedAt: input.now,
+    before: input.before,
   });
 }

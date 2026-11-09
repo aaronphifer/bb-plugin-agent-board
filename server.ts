@@ -13,6 +13,8 @@ import { FleetActivePoller } from "./lib/fleet-poll";
 import { RedteamActivePoller } from "./lib/redteam-poll";
 import { DismissalStore, attentionDismissalKey } from "./lib/dismissals";
 import { ReleaseAnnouncementStore } from "./lib/releases";
+import { ReleaseUpdateChecker, fetchLatestRelease } from "./lib/update-check";
+import manifest from "./package.json";
 
 export { BOARD_CHANGED_CHANNEL } from "./contract/rpc";
 
@@ -24,6 +26,12 @@ export default async function plugin(bb: BbPluginApi) {
   // surviving plugin reloads; never mutates any underlying source state).
   const dismissals = new DismissalStore(bb.storage.kv);
   const releases = new ReleaseAnnouncementStore(bb.storage.kv);
+  const updates = new ReleaseUpdateChecker({
+    installed: manifest.version,
+    fetchLatest: fetchLatestRelease,
+    checkNative: async () => (await bb.sdk.plugins.checkUpdates({ pluginId: "agent-board", signal: AbortSignal.timeout(8_000) })).find(result => result.id === "agent-board"),
+    applyNative: () => bb.sdk.plugins.applyUpdate({ pluginId: "agent-board" }),
+  });
   const watcher = new BoardWatcher({
     publish: (payload) => {
       collector.invalidate();
@@ -63,6 +71,8 @@ export default async function plugin(bb: BbPluginApi) {
   // BB threads/workflows/plans/delegations plus optional adapter cards share
   // one source-discriminated normalized contract.
   bb.rpc.register(rpcContract, {
+    release_update: () => updates.snapshot(),
+    install_update: ({ expectedVersion }) => updates.install(expectedVersion),
     release_announcement: () => releases.snapshot(),
     dismiss_release_announcement: ({ version }) => releases.dismiss(version),
     board_snapshot: async ({ threadId, fresh }) => {
