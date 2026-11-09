@@ -2,12 +2,14 @@
 // Frontend tests: render the threadPanelAction slot through the official
 // plugin app testing harness — columns/cards, realtime signal refetch,
 // reconnect reconcile, navigation, loading/error/empty states.
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { cleanup } from "@testing-library/react";
 import { loadPluginApp, renderSlot, type CapturedPluginApp, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { BoardCard, BoardSnapshot, ExecutionTimeline } from "@/contract/rpc";
 import { BOARD_CHANGED_CHANNEL } from "@/contract/rpc";
 
 let app: CapturedPluginApp;
+afterEach(cleanup);
 
 beforeEach(async () => {
   app = await loadPluginApp(() => import("../app"));
@@ -248,11 +250,11 @@ describe("realtime invalidation", () => {
       rpc: { board_snapshot: () => snapshotFixture() },
     });
     await slot.findAllByText("Refactor the auth flow");
-    expect(slot.inspection.rpcCalls.length).toBe(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(1);
 
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_root"] });
     await slot.findAllByText("Refactor the auth flow");
-    expect(slot.inspection.rpcCalls.length).toBe(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(2);
 
     slot.unmount();
   });
@@ -265,7 +267,7 @@ describe("realtime invalidation", () => {
 
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_other"] });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(slot.inspection.rpcCalls.length).toBe(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(1);
 
     slot.unmount();
   });
@@ -275,7 +277,7 @@ describe("realtime invalidation", () => {
     await slot.findAllByText("Refactor the auth flow");
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(slot.inspection.rpcCalls.length).toBe(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(1);
     slot.unmount();
   });
 
@@ -286,7 +288,7 @@ describe("realtime invalidation", () => {
     await slot.findAllByText("Refactor the auth flow");
 
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { nonsense: true });
-    expect(slot.inspection.rpcCalls.length).toBe(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(2);
 
     slot.unmount();
   });
@@ -297,11 +299,11 @@ describe("realtime invalidation", () => {
       realtimeConnectionState: "connected",
     });
     await slot.findAllByText("Refactor the auth flow");
-    expect(slot.inspection.rpcCalls.length).toBe(1);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(1);
 
     await slot.behavior.setRealtimeConnectionState("reconnecting");
     await slot.behavior.setRealtimeConnectionState("connected");
-    expect(slot.inspection.rpcCalls.length).toBe(2);
+    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_update").length).toBe(2);
 
     slot.unmount();
   });

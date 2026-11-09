@@ -6,7 +6,7 @@ import { phaseCard, phaseExecution, phaseSnapshot } from "./vnext-fixtures";
 import { CURRENT_RELEASE } from "../lib/releases";
 import { BOARD_CHANGED_CHANNEL } from "../contract/rpc";
 let app: CapturedPluginApp;
-beforeEach(async () => { app = await loadPluginApp(() => import("../app")); });
+beforeEach(async () => { window.localStorage.clear(); app = await loadPluginApp(() => import("../app")); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 function mount(options: Parameters<typeof renderSlot>[2] = {}) {
   return renderSlot({ component: app.navPanels[0]!.component }, { subPath: "" } as never, { ...options, rpc: { global_dashboard: () => phaseSnapshot(), release_announcement: () => ({ ...CURRENT_RELEASE, dismissed: true }), ...options.rpc } });
@@ -79,7 +79,7 @@ describe("Phase 1 dashboard interactions", () => {
   it("labels reported verification and retains source-output access", async () => {
     const done = phaseExecution("Done", { card: phaseCard({ title: "Done", status: "completed", column: "output", outputPreview: "Result: UI updated\nTests: 15 passed" }) });
     const slot = mount({ rpc: { global_dashboard: () => phaseSnapshot({ active: [], recent: [done] }) } });
-    await slot.findByText("Done"); expect(slot.getByText("Reported by the agent; not independently verified.")).toBeTruthy(); expect(slot.getByText("Original output preview")).toBeTruthy(); expect(slot.getByRole("button", { name: "Open Done" })).toBeTruthy(); slot.unmount();
+    await slot.findByText("Done"); expect(slot.getByText("Reported by the agent; not independently verified.")).toBeTruthy(); expect(slot.getByText("Original output preview")).toBeTruthy(); expect(slot.getByRole("button", { name: "Review Done" })).toBeTruthy(); slot.unmount();
   });
 });
 describe("release announcements in the dashboard", () => {

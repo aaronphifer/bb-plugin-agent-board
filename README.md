@@ -29,7 +29,7 @@ focus and the global dashboard offer other views of the same bounded state.
 - **Single-Agent Focus:** activity and discrete lifecycle state for one execution.
 - **Multi-Agent Kanban:** live state for concurrent agents and workers.
 - **Needs Attention:** structured waiting/failure states and persistent dismissal.
-- **Execution Timeline:** bounded operational events, loaded when opened.
+- **Execution Timeline:** page through retained BB operational history while keeping your place.
 - **Activity freshness:** recent or quiet public reporting without inferring a stall.
 - **Completion summaries:** outcomes, results, failures and agent-reported checks.
 - **Filters and grouping:** project, repository, provider and status over visible work.
@@ -50,10 +50,10 @@ and the distinction between fixture media and live runtime evidence.
 
 ## Install from Git
 
-First public beta: **0.6.1**. Install the released Git tag with BB:
+Install the current compatible release line with BB:
 
 ```sh
-bb plugin install git:https://github.com/aaronphifer/bb-plugin-agent-board.git@v0.6.1
+bb plugin install git:https://github.com/aaronphifer/bb-plugin-agent-board.git@^0.7.0
 ```
 
 BB's managed Git installer installs runtime dependencies and builds the frontend
@@ -69,7 +69,8 @@ bb plugin install .
 Neither Fleet nor Redteam is required. Declared compatibility is BB >=0.40 and
 SDK >=0.4.21; the development SDK is pinned to 0.4.34. See the honest
 [compatibility matrix](RELEASE_AUDIT.md), including historical runtime evidence.
-For the prepared, unpublished 0.7.0 source, see [compatibility and upgrade notes](docs/upgrade-0.7.0.md).
+See [compatibility and upgrade notes](docs/upgrade-0.7.0.md) and
+[0.7.1 validation](docs/validation-0.7.1.md).
 
 ## Usage
 
@@ -78,7 +79,8 @@ A scoped board automatically uses **Single-Agent Focus** for one logical active 
 a **Multi-Agent** view for independent active executions or concurrent Fleet workers. Focus shows
 the current model, tools, public progress updates, and lifecycle state.
 **Needs Attention** collects structured approvals, input requests, and failures.
-Open **Timeline** for bounded start, model, tool, public-update, and terminal events. Dismiss attention items after
+Open **Timeline** for start, model, tool, public-update and terminal events;
+**Load earlier activity** reads earlier retained BB history incrementally. Dismiss attention items after
 review; dismissal changes presentation state, not the underlying execution.
 
 ```sh
@@ -110,7 +112,7 @@ isolated from native BB observation; source capabilities vary.
 
 Agent Board uses supported public BB plugin APIs, never direct BB database
 access or private `@bb/*` imports. It excludes hidden reasoning/thinking and raw
-Fleet prompts/results. Timelines and activity are bounded; previews are truncated
+Fleet prompts/results. Each timeline request and activity snapshot is bounded; previews are truncated
 and common credential forms redacted. This is defense in depth: public assistant
 updates, task titles, paths and configured names can still contain private content.
 Only share screenshots after reviewing them.
@@ -144,16 +146,16 @@ This is a bounded latest view, not a persistent history database.
 - The current public BB plugin SDK does not expose a supported system/push notification delivery API.
   Agent Board intentionally does not implement unsupported browser push/service-worker hacks.
 - Fleet worker visibility requires Fleet >=0.6.0; no integration is mandatory.
-- Timeline history is bounded and varies with source capabilities.
+- Earlier timeline history depends on BB retention; Fleet and Redteam expose bounded snapshots.
 - Fleet has no token stream or attempt-history API; observation never invents those details.
 - Physical Android release verification remains separate from automated DOM tests.
 
 ## Development
 
-The prepared, unpublished 0.7.0 source is documented in [vnext launch/testing](docs/vnext-testing.md),
+Historical 0.7.0 development is documented in [vnext launch/testing](docs/vnext-testing.md),
 [design](docs/vnext-design.md) and [release convention](docs/release-convention.md).
 Use a separate BB data directory and ports for development; keep your stable
-installation untouched. `0.7.0` on this PR branch is not a published release.
+installation untouched. See the current [release notes](RELEASE_NOTES.md).
 See [dependency assessment](docs/dependency-security-0.7.0.md) and the PR
 Release validation checks before approving a merge.
 
@@ -174,3 +176,6 @@ Author page: [getbb.app/marketplace/author/aaronphifer](https://getbb.app/market
 
 [MIT](LICENSE), Copyright (c) 2026 Aaron Phifer. Third-party code retains its
 own [notices and licenses](THIRD_PARTY_NOTICES.md).
+## Daily workflow improvements
+
+Version 0.7.1 adds specific attention actions, completion review evidence, expandable observed agents, a catch-up digest, saved views, earlier timeline paging, subtle visual polish, and an update-available card using BB’s eligible-update installer. See [daily monitoring and update behavior](docs/daily-workflow.md) for limits, browser persistence and delivery to existing installations.

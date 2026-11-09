@@ -36,6 +36,7 @@ import {
 } from "./global-model";
 import { FleetSource, scopedFleetCards, addFleetGroups, fleetTimelineEvents, fleetActive } from "./fleet-source";
 import { normalizeBbTimeline } from "./timeline-model";
+import { decodeTimelineCursor, encodeTimelineCursor } from "./timeline-pagination";
 
 /** Remote label only, stripped of credentials/query/fragment; never a link. */
 export function safeRepositoryLabel(remote: string | null | undefined): string | null {
@@ -546,7 +547,10 @@ export class BoardCollector {
     };
 
     const groups = await mapWithConcurrency(selected, 4, async (group): Promise<GlobalExecutionGroup> => {
-      const representative = pickGlobalRepresentative(group.rows);
+      // A newer child result is not the outcome of the parent request. Once
+      // the group is terminal, enrich the root for review; active groups still
+      // prioritize the worker actually doing the work.
+      const representative = group.rows.some(isGlobalNonterminal) ? pickGlobalRepresentative(group.rows) : group.root;
       const summaryCards = group.rows
         .filter((row) => row.id !== representative.id)
         .map((row) => globalSummaryCard(row, row.id === group.root.id, ctx));
@@ -580,6 +584,9 @@ export class BoardCollector {
         title: globalThreadTitle(group.root),
         threadId: representative.id,
         projectId: group.root.projectId ?? representative.projectId ?? null,
+        workspaceId: representative.environmentId ?? null,
+        workspaceName: previewText(redactOperationalText(representative.environmentName ?? ""), 240),
+        branch: previewText(redactOperationalText(representative.environmentBranchName ?? ""), 240),
         cards: [...summaryCards, ...details],
         updatedAt: group.updatedAt,
       };
@@ -612,7 +619,7 @@ export class BoardCollector {
       BOARD_LIMITS.executionTimelineMaxEvents,
     );
     const target = input.source === "bb" ? input.threadId : input.source === "ollama-fleet" ? input.jobId : input.scanId;
-    const key = `${input.executionKey}:${input.source}:${target}:${limit}`;
+    const key = `${input.executionKey}:${input.source}:${target}:${limit}:${input.source === "bb" ? input.cursor ?? "latest" : "latest"}`;
     const cached = this.executionTimelineCache.get(key);
     if (cached) {
       const ttl = cached.value.active ? TTL.executionTimelineActive : TTL.executionTimelineTerminal;
@@ -659,20 +666,25 @@ export class BoardCollector {
     if (input.source === "redteam") {
       return this.redteam.timeline(input.scanId, input.executionKey, limit);
     }
+    const cursor = decodeTimelineCursor(input.cursor, input.executionKey, input.threadId);
     // Timeline rows supply tools/public updates/turns. A second, tightly
     // allowlisted event tail supplies explicit interaction resolution,
     // provisioning, interruption, and proven resolved-model timestamps.
     // Reasoning event kinds are never requested.
     const [timelineResult, lifecycleResult] = await Promise.allSettled([
-      this.sdk.threads.timeline({
+      cursor?.rowsDone ? Promise.resolve({ rows: [], activeWorkflows: [], activeBackgroundCommands: [], maxSeq: 0,
+        timelinePage: { kind: "older", hasOlderRows: false, olderCursor: null, returnedSegmentCount: 0, segmentLimit: 80 },
+        activePromptMode: null, activeThinking: null, goal: null, modelFallback: null, pendingTodos: null } as TimelineResponse) : this.sdk.threads.timeline({
         threadId: input.threadId,
         includeNestedRows: "true",
         segmentLimit: String(BOARD_LIMITS.executionTimelineSegmentLimit),
+        ...(cursor?.anchor ? { beforeAnchorId: cursor.anchor.anchorId, beforeAnchorSeq: String(cursor.anchor.anchorSeq) } : {}),
       }),
-      this.sdk.threads.events.list({
+      cursor?.lifecycleDone ? Promise.resolve([] as ThreadEventRow[]) : this.sdk.threads.events.list({
         threadId: input.threadId,
         order: "desc",
         limit: String(BOARD_LIMITS.executionTimelineMaxEvents),
+        ...(cursor?.lifecycleBeforeSeq !== null && cursor?.lifecycleBeforeSeq !== undefined ? { beforeSeq: String(cursor.lifecycleBeforeSeq) } : {}),
         types: [
           "client/turn/requested",
           "system/interaction/lifecycle",
@@ -686,6 +698,8 @@ export class BoardCollector {
       throw new Error("BB execution timeline is unavailable");
     }
     const lifecycleEvents = lifecycleResult.status === "fulfilled" ? lifecycleResult.value : [];
+    const fleet = !cursor || (!cursor.anchor && !cursor.rowsDone) ? await this.fleet.collect() : null;
+    const jobs = fleet?.jobs.filter(j => j.origin?.threadId === input.threadId) ?? [];
     const normalized = normalizeBbTimeline({
       executionKey: input.executionKey,
       threadId: input.threadId,
@@ -695,12 +709,28 @@ export class BoardCollector {
       sourceWarning: lifecycleResult.status === "rejected" ? "Some lifecycle details are temporarily unavailable." : null,
       limit,
       now: this.now(),
+      before: cursor?.before ?? undefined,
+      extraEvents: fleetTimelineEvents(jobs, input.executionKey),
     });
-    const fleet = await this.fleet.collect();
-    const jobs = fleet.jobs.filter(j => j.origin?.threadId === input.threadId);
-    const events = [...normalized.events, ...fleetTimelineEvents(jobs, input.executionKey)].sort((a,b) => a.timestamp-b.timestamp);
-    return { ...normalized, events: events.slice(-limit), active: normalized.active || jobs.some(fleetActive),
-      truncated: normalized.truncated || fleet.truncated || events.length > limit };
+    const page = timelineResult.value.timelinePage;
+    const nativeNext = page.hasOlderRows ? page.olderCursor ?? null : null;
+    const lifecycleNext = lifecycleEvents.length >= BOARD_LIMITS.executionTimelineMaxEvents ? Math.min(...lifecycleEvents.map(e => e.seq)) : null;
+    const retryLifecycle = cursor?.retryLifecycle === true || lifecycleResult.status === "rejected";
+    const olderCursor = normalized.nextBefore ? encodeTimelineCursor({
+      version: 1, executionKey: input.executionKey, threadId: input.threadId,
+      anchor: cursor?.anchor ?? null, before: normalized.nextBefore,
+      lifecycleBeforeSeq: cursor?.lifecycleBeforeSeq ?? null,
+      rowsDone: cursor?.rowsDone ?? false, lifecycleDone: cursor?.lifecycleDone ?? false,
+      retryLifecycle,
+    }) : nativeNext || lifecycleNext !== null || retryLifecycle ? encodeTimelineCursor({
+      version: 1, executionKey: input.executionKey, threadId: input.threadId,
+      anchor: nativeNext, before: null, rowsDone: nativeNext === null,
+      lifecycleBeforeSeq: retryLifecycle ? cursor?.lifecycleBeforeSeq ?? null : lifecycleNext,
+      lifecycleDone: !retryLifecycle && lifecycleNext === null, retryLifecycle: false,
+    }) : null;
+    const { nextBefore: _before, ...result } = normalized;
+    return { ...result, olderCursor, active: normalized.active || jobs.some(fleetActive),
+      truncated: normalized.truncated || fleet?.truncated === true };
   }
 
   /** Bounded activity tail for the details view (reasoning events excluded). */

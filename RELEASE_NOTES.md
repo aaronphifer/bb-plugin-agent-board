@@ -1,8 +1,41 @@
-# Agent Board v0.7.0 — prepared release notes
+# Agent Board v0.7.1
 
-Version **0.7.0** is prepared on the development PR branch, unpublished and
-awaiting final merge review. No public tag, release, marketplace update or
-installed stable-plugin update has occurred.
+Catch up on agent work, act on requests, and browse earlier execution history.
+
+- **Actionable attention:** Reply to questions, Review approval requests, and
+  Inspect failures in BB's native surface, with the reported request and its age.
+- **Completion review:** inspect objectives, observed files, reported result links
+  and checks. A finished turn or completed goal does not imply independent verification.
+- **Catch-up and saved views:** see changed outcomes since your last visit, retain
+  dashboard filters in this browser, and save up to eight named views.
+- **Observed agents:** expand child agents and native delegations with the
+  status, model and output information the source actually supplies.
+- **Subtle polish:** tighter cards, restrained status edges, clearer operations
+  and compact expandable results. Running strips remain indeterminate.
+- **Earlier timeline activity:** scroll through loaded events and select Load
+  earlier activity for earlier BB pages. Loading preserves your place; live
+  refreshes retain loaded history and bridge reconnect gaps. Failed loads offer retry.
+- **Update available:** discover official GitHub releases and review/confirm
+  updates eligible under BB's installed source and compatibility rules.
+
+Existing `^0.7.0` Git installations can update to 0.7.1 through BB. Pinned tags,
+commits and local paths stay pinned; `^0.6.1` excludes this release. Existing
+clients receive the new update card only after installing this release. There
+is no background auto-install, source-range widening or settings reset.
+
+BB >=0.40 and public SDK >=0.4.21 remain declared; use a current BB for current
+history and update APIs. Missing APIs degrade to the source's available view.
+Fleet >=0.6.0 and Redteam's public observability RPC remain optional.
+Earlier-history browsing covers BB's retained public operational events, not
+hidden reasoning or an independent archive. Fleet and Redteam retain their
+bounded snapshot limits. Saved views and catch-up state are browser-local.
+The update check reads public metadata from this repository's GitHub release
+endpoint without credentials; BB controls installation and rollback.
+
+See [daily monitoring and limits](https://github.com/aaronphifer/bb-plugin-agent-board/blob/v0.7.1/docs/daily-workflow.md)
+and [validation](https://github.com/aaronphifer/bb-plugin-agent-board/blob/v0.7.1/docs/validation-0.7.1.md).
+
+# Agent Board v0.7.0
 
 Agent Board gives you a clearer view of live agent work and completed outcomes.
 

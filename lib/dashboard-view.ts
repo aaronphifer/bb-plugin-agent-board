@@ -1,6 +1,20 @@
 import type { BoardCard, GlobalExecution, GlobalDashboardSnapshot } from "../contract/rpc";
 import { previewText, redactOperationalText } from "./board-model";
 
+export function resultLinks(text: string | null | undefined): { label: string; url: string }[] {
+  const links: { label: string; url: string }[] = [];
+  for (const match of (text?.slice(-16_384) ?? "").matchAll(/\[([^\]\n]{1,80})\]\((https:\/\/[^\s)]+)\)/g)) {
+    try {
+      const url = new URL(match[2]!);
+      const credentialName = /^(?:api[-_]?key|access[-_]?token|auth[-_]?token|password|passwd|secret|token|key|authorization|signature|sig|x-amz-signature|x-amz-credential)$/i;
+      if (url.username || url.password || url.href.length > 500 || [...url.searchParams.keys()].some(key => credentialName.test(key))) continue;
+      if (!links.some(link => link.url === url.href)) links.push({ label: redactOperationalText(match[1]!), url: url.href });
+      if (links.length === 4) break;
+    } catch { /* Not an actionable URL. */ }
+  }
+  return links;
+}
+
 export const QUIET_ACTIVITY_MS = 120_000;
 export function activityFreshness(card: BoardCard, now: number) {
   const at = card.lastActivityAt ?? card.activity?.at ?? null;
@@ -9,17 +23,18 @@ export function activityFreshness(card: BoardCard, now: number) {
   return { state: ageMs >= QUIET_ACTIVITY_MS ? "quiet" as const : "recent" as const, at, ageMs };
 }
 
-export type FilterField = "project" | "repository" | "provider" | "status";
+export type FilterField = "project" | "repository" | "workspace" | "provider" | "status";
 export type DashboardFilters = Record<FilterField, string>;
-export const EMPTY_FILTERS: DashboardFilters = { project: "", repository: "", provider: "", status: "" };
+export const EMPTY_FILTERS: DashboardFilters = { project: "", repository: "", workspace: "", provider: "", status: "" };
 // Separate sentinels prevent a real ID/remote from colliding with Unknown.
 export function filterValue(execution: GlobalExecution, field: FilterField): string {
-  const value = field === "project" ? execution.projectId : field === "repository" ? execution.repository : field === "provider" ? execution.card.providerId : execution.card.status;
+  const value = field === "project" ? execution.projectId : field === "repository" ? execution.repository : field === "workspace" ? execution.workspaceId : field === "provider" ? execution.card.providerId : execution.card.status;
   return value ? `value:${value}` : "unknown";
 }
 export function filterLabel(execution: GlobalExecution, field: FilterField): string {
   if (field === "project") return execution.projectName ?? execution.projectId ?? "Unknown project";
   if (field === "repository") return execution.repository ?? "Unknown repository";
+  if (field === "workspace") return execution.workspaceName ?? execution.workspaceId ?? "Unknown workspace";
   if (field === "provider") return execution.card.providerLabel ?? execution.card.providerId ?? "Unknown provider";
   return execution.card.status;
 }

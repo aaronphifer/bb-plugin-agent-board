@@ -34,6 +34,16 @@ function normalize(rows: unknown[], lifecycleEvents: unknown[] = [], limit?: num
 }
 
 describe("BB execution timeline normalization", () => {
+  it("pages every event within a large source page, including identical timestamps", () => {
+    const rows = Array.from({ length: 130 }, (_, i) => base(`d-${i}`, 100, { sourceSeqEnd: i, kind: "work", workKind: "delegation", status: "pending", childRef: null, description: `Task ${i}` }));
+    const first = normalizeBbTimeline({ executionKey: "bb:thr", threadId: "thr", timeline: timeline(rows), limit: 50 });
+    expect(first.nextBefore).toBeDefined();
+    const second = normalizeBbTimeline({ executionKey: "bb:thr", threadId: "thr", timeline: timeline(rows), limit: 50, before: first.nextBefore });
+    const third = normalizeBbTimeline({ executionKey: "bb:thr", threadId: "thr", timeline: timeline(rows), limit: 50, before: second.nextBefore });
+    expect([first.events.length, second.events.length, third.events.length]).toEqual([50, 50, 30]);
+    expect(new Set([...first.events, ...second.events, ...third.events].map(e => e.id)).size).toBe(130);
+    expect(third.nextBefore).toBeUndefined();
+  });
   it.each([
     ["completed", "execution-complete"],
     ["error", "execution-failed"],

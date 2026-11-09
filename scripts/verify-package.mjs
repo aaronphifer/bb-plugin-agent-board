@@ -63,7 +63,7 @@ for (const side of ['app', 'server']) {
   assert.equal(meta.pluginId, 'agent-board');
   assert.equal(meta.pluginVersion, pkg.version);
   assert.equal(meta.artifactFormatVersion, 1);
-  assert.equal(meta.builtWith.bbVersion, '0.46.0');
+  assert.match(meta.builtWith.bbVersion, /^\d+\.\d+\.\d+(?:[-+].*)?$/, 'Build must identify its actual BB builder version');
 }
 const sha256 = createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
 console.log(JSON.stringify({ pluginId: 'agent-board', version: pkg.version, files: entries.length, size: pack.size, sha256 }));

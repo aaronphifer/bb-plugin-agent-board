@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { cleanup, fireEvent } from "@testing-library/react";
 import { loadPluginApp, renderSlot, type CapturedPluginApp, type RenderedSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { AttentionItem, BoardCard, ExecutionTimeline, GlobalDashboardSnapshot, GlobalExecution, TimelineEvent } from "@/contract/rpc";
 import { BOARD_CHANGED_CHANNEL } from "@/contract/rpc";
@@ -14,8 +15,9 @@ const LONG_ERROR = `Provider error — 400: {"message":"${LONG_TOKEN}","document
 
 let app: CapturedPluginApp;
 
-beforeEach(async () => { app = await loadPluginApp(() => import("../app")); });
+beforeEach(async () => { window.localStorage.clear(); app = await loadPluginApp(() => import("../app")); });
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia;
 });
@@ -72,6 +74,57 @@ describe("global page registration", () => {
 });
 
 describe("global operations rendering", () => {
+  it("labels native attention actions and exposes failure inspection", async () => {
+    const item = attention({ interactionKind: "question" });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ attention: [item] }) } });
+    (await slot.findByRole("button", { name: "Reply to Auth refactor" })).click();
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_auth" });
+    slot.unmount();
+  });
+  it("keeps healthy diagnostics and filters collapsed while remembering a saved view", async () => {
+    const run = execution("bb:auth", { projectId: "p1", projectName: "Project One" });
+    const options = { rpc: { global_dashboard: () => snapshot({ active: [run] }) } };
+    const slot = mountGlobal(options);
+    await slot.findByText("Auth refactor");
+    expect(slot.container.querySelector('[data-part="monitoring-details"]')?.hasAttribute("open")).toBe(false);
+    fireEvent.change(slot.getByLabelText("Filter by project"), { target: { value: "value:p1" } });
+    fireEvent.change(slot.getByLabelText("Saved view name"), { target: { value: "My project" } });
+    slot.getByRole("button", { name: "Save view" }).click();
+    await slot.findByRole("option", { name: "My project" });
+    slot.unmount();
+    const next = mountGlobal(options);
+    await next.findByText("Auth refactor");
+    expect((next.getByLabelText("Filter by project") as HTMLSelectElement).value).toBe("value:p1");
+    expect(next.getByRole("option", { name: "My project" })).toBeTruthy();
+    next.unmount();
+  });
+  it("expands observed child activity without inventing its model or thread", async () => {
+    const run = execution("bb:auth", { children: [boardCard({ key: "native", title: "Review tests", kind: "delegation", threadId: null, ownerThreadId: "thr_auth", model: null, activity: { text: "Command: npm test", at: 100, kind: "command" } })] });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ active: [run] }) } });
+    await slot.findByText("Auth refactor");
+    fireEvent.click(slot.getByText(/Observed agents/));
+    expect(slot.getByText("Review tests")).toBeTruthy();
+    expect(slot.getByText(/Model unavailable/)).toBeTruthy();
+    expect(slot.getByText("Command: npm test")).toBeTruthy();
+    slot.unmount();
+  });
+  it("opens a native subagent timeline using its owner through the shared target helper", async () => {
+    const native = boardCard({ kind: "delegation", title: "Native review", threadId: null, ownerThreadId: "thr_auth" });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ active: [execution("native", { card: native })] }), execution_timeline: () => executionTimeline({ events: [] }) } });
+    (await slot.findByRole("button", { name: "Open timeline for Native review" })).click();
+    await slot.findByText("No public operational events are available.");
+    expect(slot.inspection.rpcCalls.find(call => call.method === "execution_timeline")?.input).toMatchObject({ threadId: "thr_auth" });
+    slot.unmount();
+  });
+  it("separates finished turns from independently verified work", async () => {
+    const recent = execution("bb:done", { card: boardCard({ status: "completed", outputPreview: "Done", review: { objective: "Fix auth", goalStatus: null, changedPaths: ["src/auth.ts"] } }) });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ active: [], recent: [recent] }) } });
+    expect(await slot.findByText("Turn finished — review needed")).toBeTruthy();
+    expect(slot.getByText(/Fix auth/)).toBeTruthy();
+    expect(slot.getByText("src/auth.ts")).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Review Auth refactor" })).toBeTruthy();
+    slot.unmount();
+  });
   it("keeps the box-sizing invariant local instead of hiding page overflow", () => {
     const css = readFileSync("app.css", "utf8");
     expect(css).toMatch(/\.ab-global-dashboard[\s\S]*box-sizing:\s*border-box/);
@@ -101,7 +154,7 @@ describe("global operations rendering", () => {
     const item = attention();
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ attention: [item], counts: { active: 1, waiting: 0, attention: 1, recent: 0, failures: 0 } }) } });
     expect(await slot.findByText("Approval required")).toBeTruthy();
-    slot.getAllByLabelText("Open Auth refactor")[0]!.click();
+    slot.getAllByLabelText("Respond Auth refactor")[0]!.click();
     expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_auth" });
     slot.unmount();
   });
@@ -218,19 +271,21 @@ describe("global operations rendering", () => {
 
     expect(slot.getByTestId("kanban-live-indicator").textContent).toContain("Live");
     expect(slot.getByText("Failed")).toBeTruthy();
-    expect(slot.getAllByRole("button", { name: `Open ${longTitle}` })).toHaveLength(3);
+    expect(slot.getAllByRole("button", { name: `Open ${longTitle}` })).toHaveLength(1);
+    expect(slot.getByRole("button", { name: `Inspect failure ${longTitle}` })).toBeTruthy();
+    expect(slot.getByRole("button", { name: `Review ${longTitle}` })).toBeTruthy();
     expect(slot.getByRole("button", { name: `Dismiss ${longTitle}` })).toBeTruthy();
     expect(slot.getByRole("button", { name: /Clear dismissed \(1\)/ })).toBeTruthy();
-    expect(slot.getAllByRole("button", { name: `Open timeline for ${longTitle}` })).toHaveLength(2);
+    expect(slot.getAllByRole("button", { name: `Open timeline for ${longTitle}` })).toHaveLength(3);
     slot.unmount();
   });
 
-  it("keeps the desktop two-column active grid while using zero-minimum tracks", async () => {
+  it("keeps compact active rows on zero-minimum tracks", async () => {
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot({ active: [execution("one"), execution("two")] }) } });
     await slot.findAllByText("Auth refactor");
     const activeGrid = slot.container.querySelector<HTMLElement>("[data-global-grid='active']");
     expect(activeGrid?.className).toContain("grid-cols-[minmax(0,1fr)]");
-    expect(activeGrid?.className).toContain("md:grid-cols-[repeat(2,minmax(0,1fr))]");
+    expect(activeGrid?.className).not.toContain("md:grid-cols-[repeat(2,minmax(0,1fr))]");
     slot.unmount();
   });
 });
@@ -239,11 +294,11 @@ describe("global refresh behavior", () => {
   it("refetches on a global invalidation but ignores a scoped-only signal", async () => {
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot() } });
     await slot.findByText("Auth refactor");
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: ["thr_other"] });
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(2);
     slot.unmount();
   });
 
@@ -251,13 +306,13 @@ describe("global refresh behavior", () => {
     vi.useFakeTimers();
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot() } });
     await vi.runOnlyPendingTimersAsync();
-    const initial = slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length;
+    const initial = slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length;
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS);
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length).toBeGreaterThan(initial);
-    const beforeUnmount = slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").length;
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length).toBeGreaterThan(initial);
+    const beforeUnmount = slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).length;
     slot.unmount();
     await vi.advanceTimersByTimeAsync(GLOBAL_DISCOVERY_INTERVAL_MS * 2);
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(beforeUnmount);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(beforeUnmount);
   });
 });
 
@@ -278,7 +333,7 @@ describe("terminal-state self-correction in the hook", () => {
       },
     });
     // The first fetch is in flight; a terminal signal arrives mid-flight.
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(1);
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
@@ -289,13 +344,13 @@ describe("terminal-state self-correction in the hook", () => {
     // The in-flight fetch settled, then exactly ONE trailing refetch ran —
     // the signal burst collapsed into a single retry, not a storm.
     expect(calls).toBe(2);
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(2);
 
     // Signals after settle go back to the normal immediate path.
     await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(calls).toBe(3);
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(3); // no retry loop
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(3); // no retry loop
     slot.unmount();
   });
 });
@@ -336,6 +391,45 @@ describe("latestPublicUpdate excerpt rendering", () => {
 });
 
 describe("lazy shared execution timeline", () => {
+  it("fills a disjoint live-refresh gap before resuming the previous older history", async () => {
+    let refreshed = false;
+    const history = vi.fn(async (raw: unknown) => {
+      const input = raw as { cursor?: string };
+      if (input.cursor === "bridge") return executionTimeline({ active: true, olderCursor: "bridge-next", events: [timelineEvent("old", 100), timelineEvent("gap", 200, { title: "Missed during reconnect" })] });
+      return executionTimeline({ active: true, olderCursor: refreshed ? "bridge" : "older-than-old", events: [refreshed ? timelineEvent("new", 300, { title: "New after reconnect" }) : timelineEvent("old", 100)] });
+    });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot(), execution_timeline: history } });
+    (await slot.findByRole("button", { name: "Open timeline for Auth refactor" })).click();
+    await slot.findByText("Execution started");
+    refreshed = true; await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
+    await slot.findByText("New after reconnect");
+    fireEvent.click(slot.getByRole("button", { name: "Load earlier activity" }));
+    await slot.findByText("Missed during reconnect");
+    expect(history).toHaveBeenLastCalledWith({ source: "bb", executionKey: "bb:auth", threadId: "thr_auth", cursor: "bridge" });
+    slot.unmount();
+  });
+  it("loads earlier history, keeps it during live refresh, and retries without losing the list", async () => {
+    let fail = true;
+    const history = vi.fn(async (raw: unknown) => {
+      const input = raw as { cursor?: string };
+      if (input.cursor && fail) throw new Error("temporary history failure");
+      return input.cursor
+        ? executionTimeline({ active: true, olderCursor: null, events: [timelineEvent("old", 10, { title: "Earlier command" }), timelineEvent("start", 100)] })
+        : executionTimeline({ active: true, olderCursor: "older-page", truncated: true, events: [timelineEvent("start", 100), timelineEvent("new", 200, { title: "Latest command" })] });
+    });
+    const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot(), execution_timeline: history } });
+    (await slot.findByRole("button", { name: "Open timeline for Auth refactor" })).click();
+    fireEvent.click(await slot.findByRole("button", { name: "Load earlier activity" }));
+    await slot.findByText(/temporary history failure/);
+    expect(slot.getByText("Latest command")).toBeTruthy();
+    fail = false;
+    fireEvent.click(slot.getByRole("button", { name: "Load earlier activity" }));
+    await slot.findByText("Earlier command");
+    await slot.behavior.emitRealtime(BOARD_CHANGED_CHANNEL, { roots: [], global: true });
+    expect(slot.getByText("Earlier command")).toBeTruthy();
+    expect(document.querySelectorAll('[data-event-kind]').length).toBe(3);
+    slot.unmount();
+  });
   it("adds zero initial requests, then renders chronological operational events from one timeline RPC", async () => {
     const rpcTimeline = vi.fn(async () => executionTimeline({
       events: [
@@ -348,7 +442,7 @@ describe("lazy shared execution timeline", () => {
     }));
     const slot = mountGlobal({ rpc: { global_dashboard: () => snapshot(), execution_timeline: rpcTimeline } });
     await slot.findByText("Auth refactor");
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method))).toHaveLength(1);
     expect(rpcTimeline).not.toHaveBeenCalled();
 
     const trigger = slot.getByRole("button", { name: "Open timeline for Auth refactor" });
@@ -357,7 +451,7 @@ describe("lazy shared execution timeline", () => {
     trigger.click();
     expect(await slot.findByText("The collector remains bounded.")).toBeTruthy();
     expect(rpcTimeline).toHaveBeenCalledTimes(1);
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").filter((call) => call.method === "execution_timeline")).toHaveLength(1);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).filter((call) => call.method === "execution_timeline")).toHaveLength(1);
     const rows = Array.from(document.querySelectorAll("[data-event-kind]"));
     expect(rows.map((row) => row.getAttribute("data-event-kind"))).toEqual(["execution-start", "model-selected", "tool-complete", "public-update", "execution-complete"]);
     expect(document.body.textContent).toContain("read_file · src/auth.ts · 1s");
@@ -480,7 +574,7 @@ describe("attention dismissal UI", () => {
       type: item.type,
       updatedAt: item.updatedAt,
     });
-    expect(slot.inspection.rpcCalls.filter(call => call.method !== "release_announcement").filter((call) => call.method === "global_dashboard")).toHaveLength(2);
+    expect(slot.inspection.rpcCalls.filter(call => !["release_announcement", "release_update"].includes(call.method)).filter((call) => call.method === "global_dashboard")).toHaveLength(2);
     slot.unmount();
   });
 

@@ -64,6 +64,7 @@ function TimelineRow({ event, reducedMotion }: { event: TimelineEvent; reducedMo
   return (
     <li
       data-event-kind={event.kind}
+      data-event-id={event.id}
       className={cn(
         "grid min-w-0 grid-cols-[4.75rem_minmax(0,1fr)] gap-2 py-2.5 sm:grid-cols-[5.5rem_1.25rem_minmax(0,1fr)] sm:gap-3",
         !reducedMotion && "ab-row-in",
@@ -96,8 +97,9 @@ export function timelineTargetForCard(card: BoardCard, executionKey = card.group
   if (card.source === "ollama-fleet" && card.jobId) {
     return { source: "ollama-fleet", executionKey, jobId: card.jobId, title: card.title };
   }
-  if (card.source === "bb" && card.threadId !== null) {
-    return { source: "bb", executionKey, threadId: card.threadId, title: card.title };
+  const threadId = card.threadId ?? card.ownerThreadId;
+  if (card.source === "bb" && threadId) {
+    return { source: "bb", executionKey, threadId, title: card.title };
   }
   if (card.source === "redteam" && card.scanId) {
     return { source: "redteam", executionKey, scanId: card.scanId, title: card.title };
@@ -116,11 +118,29 @@ export function ExecutionTimelineDialog({
 }) {
   const [open, setOpen] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
-  const { timeline, loading, refreshing, error, refetch } = useExecutionTimeline(target, open);
+  const { timeline, loading, refreshing, error, refetch, loadingEarlier, earlierError, loadEarlier } = useExecutionTimeline(target, open);
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const lastEventId = timeline?.events.at(-1)?.id ?? null;
+  const historyAnchor = useRef<{ id: string; offset: number } | null>(null);
+
+  const showEarlier = () => {
+    const element = scrollRef.current;
+    if (element) {
+      const top = element.getBoundingClientRect().top;
+      const first = Array.from(element.querySelectorAll<HTMLElement>("[data-event-id]")).find(row => row.getBoundingClientRect().bottom > top);
+      if (first) historyAnchor.current = { id: first.dataset.eventId!, offset: first.getBoundingClientRect().top - top };
+    }
+    following.current = false; loadEarlier();
+  };
+  useLayoutEffect(() => {
+    const element = scrollRef.current, anchor = historyAnchor.current;
+    if (!element || !anchor || loadingEarlier) return;
+    const row = Array.from(element.querySelectorAll<HTMLElement>("[data-event-id]")).find(node => node.dataset.eventId === anchor.id);
+    if (row) element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+    historyAnchor.current = null;
+  }, [timeline?.events.length, loadingEarlier]);
 
   const jumpToLatest = () => {
     const element = scrollRef.current;
@@ -141,14 +161,14 @@ export function ExecutionTimelineDialog({
           Timeline
         </Button>
       </DialogTrigger>
-      <DialogContent className="min-w-0 max-w-full max-h-[88dvh] gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-5" data-testid="execution-timeline-dialog" data-motion={reducedMotion ? "reduced" : "full"}>
+      <DialogContent className="flex h-[80dvh] min-h-0 min-w-0 max-w-full max-h-[88dvh] flex-col gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-5" data-testid="execution-timeline-dialog" data-motion={reducedMotion ? "reduced" : "full"}>
         <DialogHeader className="min-w-0 max-w-full pr-8">
           <div className="flex flex-wrap items-center gap-2">
             <DialogTitle>Execution timeline</DialogTitle>
             {timeline?.active ? <span role="status" aria-label="Live timeline" className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary"><span className={cn("size-1.5 rounded-full bg-primary", !reducedMotion && "ab-live-dot")} aria-hidden="true" />Live</span> : null}
             {refreshing ? <span className="text-[10px] text-muted-foreground">Updating…</span> : null}
           </div>
-          <DialogDescription className="min-w-0 max-w-full truncate">{target.title} · bounded operational events</DialogDescription>
+          <DialogDescription className="min-w-0 max-w-full truncate">{target.title} · operational history</DialogDescription>
         </DialogHeader>
 
         {error !== null ? (
@@ -160,7 +180,12 @@ export function ExecutionTimelineDialog({
         {loading && timeline === null ? <div className="grid min-h-48 place-items-center text-sm text-muted-foreground"><span className="flex items-center gap-2"><Icon name="Loading" className="size-4 animate-spin" aria-hidden="true" />Loading timeline…</span></div> : null}
         {timeline !== null ? (
           <>
-            {timeline.truncated ? <p className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground">Earlier activity omitted — showing the latest bounded events.</p> : null}
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {timeline.olderCursor ? <Button variant="outline" size="sm" disabled={loadingEarlier || refreshing} onClick={showEarlier}>{loadingEarlier ? "Loading earlier…" : "Load earlier activity"}</Button> : null}
+              <span className="text-[11px] text-muted-foreground" aria-live="polite">{timeline.events.length} events loaded</span>
+            </div>
+            {timeline.truncated && !timeline.olderCursor ? <p className="shrink-0 rounded-md border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground">Earlier activity omitted — this source only exposes its retained snapshot.</p> : null}
+            {earlierError ? <p role="alert" className="shrink-0 text-xs text-destructive">Earlier history unavailable: {earlierError}. Use Load earlier activity to retry.</p> : null}
             {timeline.sourceWarning !== null ? <p className="text-[11px] text-muted-foreground">{timeline.sourceWarning}</p> : null}
             {timeline.events.length === 0 ? <p className="grid min-h-40 place-items-center text-sm text-muted-foreground">No public operational events are available.</p> : (
               <div

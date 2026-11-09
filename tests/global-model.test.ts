@@ -60,6 +60,17 @@ function attention(type: AttentionType, message: string, overrides: Partial<Boar
 }
 
 describe("global logical execution model", () => {
+  it("does not substitute a child result for an observed parent result", () => {
+    const root = card({ outputPreview: "Parent result", review: { objective: "Fix auth", goalStatus: null, changedPaths: [] } });
+    const child = card({ key: "child", isRoot: false, model: "child-model", outputPreview: "Child result", activity: { text: "Worked", at: 200, kind: "tool" } });
+    expect(buildGlobalExecution(group({ cards: [root, child] })).card.outputPreview).toBe("Parent result");
+  });
+  it("carries source attention timestamps and expandable observed children", () => {
+    const root = card({ status: "waiting", interaction: { kind: "question", at: 250 }, attention: { type: "action-required", message: "Choose target" } });
+    const child = card({ key: "child", isRoot: false, parentKey: root.key, status: "completed" });
+    expect(deriveAttentionItems([group({ cards: [root] })], 1000)[0]?.firstObservedAt).toBe(250);
+    expect(buildGlobalExecution(group({ cards: [root, child] })).children).toEqual([child]);
+  });
   it("returns a truthful zero-work dashboard", () => {
     const result = buildGlobalDashboard([], { now: 1_000 });
     expect(result.active).toEqual([]);
